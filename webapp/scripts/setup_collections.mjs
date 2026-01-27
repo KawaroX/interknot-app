@@ -58,7 +58,7 @@ const autodateOptions = (onCreate, onUpdate) => ({ onCreate, onUpdate });
 const fileOptions = () => ({
   maxSelect: 1,
   maxSize: 0,
-  mimeTypes: ['image/*'],
+  mimeTypes: [],
   thumbs: [],
   protected: false,
 });

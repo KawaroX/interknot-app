@@ -28,7 +28,6 @@ Thumbs.db
 server/pb_data/
 server/pb_public/
 server/pb_logs/
-server/pb_migrations/
 server/pocketbase
 
 # Docs

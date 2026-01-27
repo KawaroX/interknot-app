@@ -21,9 +21,10 @@
 4. 启动前端：`cd webapp && npm install && npm run dev`
 
 ## PocketBase 集合结构
-- 默认方式：运行 `cd webapp && node scripts/setup_collections.mjs`，脚本会创建或更新集合结构。
+- 推荐方式：使用仓库内的 `server/pb_migrations`，PocketBase 启动时会自动执行未应用的迁移。
+- 修改集合后：执行 `cd server && ./pocketbase migrate collections` 生成新的迁移文件并提交。
+- 备用方式：运行 `cd webapp && node scripts/setup_collections.mjs`，脚本会创建或更新集合结构。
 - 可选方式：在 PocketBase 管理后台导出/导入集合结构 JSON（不含数据），用于环境迁移。
-- 可选方式：执行 `cd server && ./pocketbase migrate collections` 生成 `server/pb_migrations` 迁移文件（如需提交，请从 `.gitignore` 移除该路径）。
 
 ## 致谢
 - 感谢 [blacktunes/interknot](https://github.com/blacktunes/interknot) 的概念与视觉氛围启发
