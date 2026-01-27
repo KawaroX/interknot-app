@@ -10,7 +10,7 @@
   import { messages, loadMessages } from '$lib/stores/messages';
   import { loadPosts, searchQuery } from '$lib/stores/posts';
 
-  const repoUrl = 'https://github.com/KawaroX/inter-knot-old';
+  const repoUrl = 'https://github.com/KawaroX/interknot-app';
 
   $: user = $session;
   $: avatarUrl = user?.avatar
