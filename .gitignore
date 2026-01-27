@@ -1,0 +1,46 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Env
+.env
+.env.*
+!**/.env.example
+
+# Node / SvelteKit
+**/node_modules/
+**/.svelte-kit/
+**/build/
+**/.output/
+**/.vercel/
+**/.netlify/
+**/.wrangler/
+**/vite.config.*.timestamp-*
+
+# PocketBase
+server/pb_data/
+server/pb_public/
+server/pb_logs/
+server/pb_migrations/
+server/pocketbase
+
+# Docs
+**/docs/
+**/doc/
+**/documentation/
+**/*.md
+!/README.md
+
+# Tests
+**/__tests__/
+**/tests/
+**/test/
+**/*.spec.*
+**/*.test.*
