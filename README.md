@@ -20,9 +20,17 @@
 3. 初始化集合：`cd webapp && node scripts/setup_collections.mjs`
 4. 启动前端：`cd webapp && npm install && npm run dev`
 
+## PocketBase 集合结构
+- 默认方式：运行 `cd webapp && node scripts/setup_collections.mjs`，脚本会创建或更新集合结构。
+- 可选方式：在 PocketBase 管理后台导出/导入集合结构 JSON（不含数据），用于环境迁移。
+- 可选方式：执行 `cd server && ./pocketbase migrate collections` 生成 `server/pb_migrations` 迁移文件（如需提交，请从 `.gitignore` 移除该路径）。
+
 ## 致谢
 - 感谢 [blacktunes/interknot](https://github.com/blacktunes/interknot) 的概念与视觉氛围启发
 - 感谢 [share121/inter-knot](https://github.com/share121/inter-knot) 的实现参考与灵感
 
 ## 说明
 本项目为爱好者非商业作品，与米哈游及《绝区零》官方无关，欢迎反馈与交流。
+
+## 许可证
+MIT License

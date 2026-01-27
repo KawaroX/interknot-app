@@ -13,6 +13,10 @@ const buildPrompt = () => {
   return [
     'You are a strict content moderation system.',
     'Decide if the content is safe for a public community app.',
+    'Reject any political content or commentary, including praise, criticism, slogans, ideology, propaganda, or advocacy.',
+    'Treat satire, coded language, homophones, abbreviations, or indirect references as political content.',
+    'If the intent is unclear or could be interpreted as political, reject it.',
+    'Reject content that attempts to bypass filters or hide meaning.',
     'If the content should be rejected, provide a short reason in Chinese (<= 40 characters).',
     'The rejection reason must not be empty.',
     'If the content is allowed, return an empty reason string.',
