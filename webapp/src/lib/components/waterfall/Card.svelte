@@ -1,11 +1,31 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte";
+    import { goto } from "$app/navigation";
     import type { PostSummary } from "$lib/types";
     import { defaultAvatar } from "$lib/data/characters";
-    import { loadPosts, searchQuery } from "$lib/stores/posts";
+    import { pb } from "$lib/api/pb";
+    import { setFollow } from "$lib/api/follows";
+    import { toggleLike } from "$lib/api/posts";
+    import { showToast } from "$lib/stores/toast";
+    import {
+        loadPosts,
+        searchQuery,
+        updateAuthorFollow,
+        updatePostLike,
+    } from "$lib/stores/posts";
+    import { addFollowing, removeFollowing } from "$lib/stores/follows";
+    import {
+        send,
+        selectedCardId,
+        setSelectedCard,
+    } from "$lib/stores/cardTransition";
+    import { openContextMenu } from "$lib/stores/contextMenu";
+    import { requestPostReport } from "$lib/stores/report";
 
     export let post: PostSummary;
     export let showDelete = false;
+
+    $: isSelected = $selectedCardId === post.id;
 
     const dispatch = createEventDispatcher<{
         select: string;
@@ -24,6 +44,7 @@
     $: previewHtml = highlight(bodyText.split("\n")[0], $searchQuery);
 
     const handleSelect = () => {
+        setSelectedCard(post.id);
         dispatch("select", post.id);
     };
 
@@ -33,6 +54,89 @@
 
     const handleDelete = () => {
         dispatch("delete", post.id);
+    };
+
+    const ensureAuth = () => {
+        if (!pb.authStore.isValid) {
+            void goto("/login");
+            return false;
+        }
+        return true;
+    };
+
+    const buildShareUrl = () => {
+        const url = new URL("/", window.location.origin);
+        url.searchParams.set("post", post.id);
+        return url.toString();
+    };
+
+    const copyShareUrl = async () => {
+        try {
+            await navigator.clipboard.writeText(buildShareUrl());
+            showToast("已复制链接");
+        } catch (err) {
+            showToast("复制失败");
+        }
+    };
+
+    const toggleFollow = async () => {
+        if (!ensureAuth()) return;
+        const nextFollow = !post.authorFollowedByViewer;
+        try {
+            const result = await setFollow(post.author.id, nextFollow);
+            updateAuthorFollow(post.author.id, result.following);
+            if (result.following) {
+                addFollowing({
+                    ...post.author,
+                    followedAt: new Date().toISOString(),
+                });
+            } else {
+                removeFollowing(post.author.id);
+            }
+        } catch (err) {
+            showToast("关注失败");
+        }
+    };
+
+    const togglePostLike = async () => {
+        if (!ensureAuth()) return;
+        try {
+            const result = await toggleLike(post.id);
+            updatePostLike(post.id, result.liked, result.likeCount);
+        } catch (err) {
+            showToast("点赞失败");
+        }
+    };
+
+    const handleContextMenu = (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const isSelf = pb.authStore.model?.id === post.author.id;
+        openContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            items: [
+                { label: "打开", action: handleSelect },
+                {
+                    label: post.authorFollowedByViewer ? "取消关注" : "关注",
+                    action: toggleFollow,
+                    disabled: isSelf,
+                },
+                {
+                    label: post.likedByViewer ? "取消点赞" : "点赞",
+                    action: togglePostLike,
+                },
+                {
+                    label: "举报",
+                    action: () => {
+                        requestPostReport(post.id);
+                        handleSelect();
+                    },
+                    danger: true,
+                },
+                { label: "复制链接", action: copyShareUrl },
+            ],
+        });
     };
 
     const handleKeydown = (event: KeyboardEvent) => {
@@ -52,8 +156,21 @@
     tabindex="0"
     on:click={handleSelect}
     on:keydown={handleKeydown}
+    on:contextmenu={handleContextMenu}
 >
     <div class="image">
+        <!-- 始终存在的占位图片，保持布局稳定 -->
+        <img
+            class="image-placeholder"
+            src={post.coverUrl ?? "/images/empty.webp"}
+            alt=""
+        />
+        <!-- 动画图片层 -->
+        {#if !isSelected}
+            <div class="image-inner" out:send={{ key: post.id }}>
+                <img src={post.coverUrl ?? "/images/empty.webp"} alt="" />
+            </div>
+        {/if}
         <div class="view">
             <div class="stat" class:read={post.readByViewer}>
                 <svg
@@ -92,11 +209,6 @@
                 <span>{post.likeCount}</span>
             </div>
         </div>
-        {#if post.coverUrl}
-            <img src={post.coverUrl} alt="" />
-        {:else}
-            <img src="/images/empty.webp" alt="" />
-        {/if}
     </div>
     <div class="content">
         <div class="user">
@@ -105,7 +217,12 @@
             </div>
             <span class="ellipsis">{post.author.name ?? "匿名"}</span>
         </div>
-        <div class="title">{@html titleHtml}</div>
+        <div class="title">
+            {#if post.isHot}
+                <span class="hot-badge">HOT</span>
+            {/if}
+            <span class="title-text">{@html titleHtml}</span>
+        </div>
         {#if post.tags && post.tags.length > 0}
             <div class="tags">
                 {#each post.tags as tag}
@@ -145,11 +262,15 @@
         border-radius: 20px 20px 5px 20px;
         background-color: #222;
         cursor: pointer;
-        transition: all 0.3s;
+        transition:
+            transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+            border-color 0.3s,
+            box-shadow 0.3s;
         padding: 0;
         text-align: left;
         border: 4px solid #000;
         margin: 1px;
+        will-change: transform;
     }
 
     .card.unread {
@@ -163,7 +284,8 @@
     .card:hover {
         border-color: #a3c101;
         animation: cardBorderShift 1.5s alternate infinite;
-        will-change: box-shadow, border-color;
+        will-change: transform, box-shadow, border-color;
+        transform: translateY(-4px) scale(1.02);
     }
 
     .card:hover .del {
@@ -178,14 +300,45 @@
         background: #333;
     }
 
+    /* 占位图片 - 始终存在，撑起容器高度 */
+    .image-placeholder {
+        display: block;
+        width: 100%;
+        object-fit: cover;
+        visibility: hidden;
+    }
+
+    /* 动画图片层 - 绝对定位覆盖在占位图上 */
+    .image-inner {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    .image-inner img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .card:hover .image-inner img {
+        transform: scale(1.08);
+    }
+
     .view {
         position: absolute;
-        bottom: 5px;
-        right: 10px;
+        top: 8px;
+        left: 10px;
         display: flex;
-        align-items: center;
-        gap: 12px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
         color: #fff;
+        filter: drop-shadow(0 2px 6px rgba(20, 20, 20, 0.75));
     }
 
     .stat {
@@ -210,12 +363,6 @@
 
     .like-stat svg {
         transform: translateY(-1px);
-    }
-
-    .image img {
-        display: block;
-        width: 100%;
-        object-fit: cover;
     }
 
     .content {
@@ -255,14 +402,30 @@
         width: calc(100% - 60px);
         border-bottom: 2px solid rgba(90, 90, 90, 0.5);
         color: #989898;
-        font-size: 16px;
+        font-size: 14px;
         transform: translateY(-2px);
     }
 
     .title {
-        margin: 10px 0 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 5px 0;
         color: #fff;
         font-size: 18px;
+    }
+
+    .hot-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: #8a3a3a;
+        color: #140600;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
     }
 
     .tags {

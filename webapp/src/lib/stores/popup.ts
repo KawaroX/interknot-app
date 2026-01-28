@@ -1,5 +1,6 @@
 import { get, writable } from 'svelte/store';
 import type { PostSummary } from '$lib/types';
+import { clearSelectedCard } from '$lib/stores/cardTransition';
 
 export type PopupState =
   | { type: 'message'; messageId: string }
@@ -45,9 +46,12 @@ export const openImage = (src: string) => {
 
 export const closePopup = () => {
   const current = get(popup);
+  
   if (current?.type === 'image' && current.returnTo) {
     popup.set(current.returnTo);
     return;
   }
+
+  clearSelectedCard();
   popup.set(null);
 };

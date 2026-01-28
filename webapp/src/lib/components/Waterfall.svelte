@@ -209,6 +209,7 @@
         lastSearch = $searchQuery;
     }
 
+
     onMount(() => {
         void loadPosts();
         updateLayout();

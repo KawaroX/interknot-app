@@ -10,9 +10,13 @@
   let legalError = '';
   let loading = false;
   let passwordLoading = false;
+  let registerLoading = false;
   let legalLoading = true;
   let legalDocuments: LegalDocument[] = [];
   let activeDoc: LegalDocument['key'] = 'terms_of_service';
+  let mobileTab: 'legal' | 'login' = 'legal';
+  let isCompact = false;
+  let showRegister = false;
   let readStatus: Record<LegalDocument['key'], boolean> = {
     terms_of_service: false,
     usage_policy: false,
@@ -20,10 +24,13 @@
   let termsDoc: LegalDocument | undefined;
   let usageDoc: LegalDocument | undefined;
   let canAgree = false;
-  let canSubmit = false;
   let agreed = false;
   let email = '';
   let password = '';
+  let registerEmail = '';
+  let registerPassword = '';
+  let registerPasswordConfirm = '';
+  let registerInviteCode = '';
   let legalScroll: HTMLDivElement | null = null;
 
   $: if ($session) {
@@ -168,6 +175,14 @@
 
   const loginWithPassword = async () => {
     error = '';
+    if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
+      error = '请先阅读并同意用户协议与隐私政策。';
+      return;
+    }
+    if (legalError) {
+      error = '条款加载失败，请稍后再试。';
+      return;
+    }
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !password) {
       error = '请输入账号邮箱与密码。';
@@ -182,6 +197,58 @@
       error = message ? `账号密码登录失败：${message}` : '账号密码登录失败';
     } finally {
       passwordLoading = false;
+    }
+  };
+
+  const registerWithEmail = async () => {
+    error = '';
+    if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
+      error = '请先阅读并同意用户协议与隐私政策。';
+      return;
+    }
+    if (legalError) {
+      error = '条款加载失败，请稍后再试。';
+      return;
+    }
+    const trimmedEmail = registerEmail.trim();
+    if (!trimmedEmail || !registerPassword || !registerPasswordConfirm) {
+      error = '请输入注册邮箱与密码。';
+      return;
+    }
+    if (registerPassword !== registerPasswordConfirm) {
+      error = '两次输入的密码不一致。';
+      return;
+    }
+    try {
+      registerLoading = true;
+      const fallbackBase = trimmedEmail.split('@')[0] ?? '';
+      const fallbackName = (fallbackBase || buildFallbackName()).slice(0, 20);
+      const inviteCode = registerInviteCode.trim();
+      const termsVersion = getVersion(termsDoc);
+      const usageVersion = getVersion(usageDoc);
+      const acceptedAt = new Date().toISOString();
+      const payload: Record<string, unknown> = {
+        email: trimmedEmail,
+        password: registerPassword,
+        passwordConfirm: registerPasswordConfirm,
+        name: fallbackName,
+        can_post: false,
+        terms_version: termsVersion,
+        terms_accepted_at: acceptedAt,
+        usage_version: usageVersion,
+        usage_accepted_at: acceptedAt,
+      };
+      if (inviteCode) {
+        payload.invite_code = inviteCode;
+      }
+      await pb.collection('users').create(payload);
+      await pb.collection('users').authWithPassword(trimmedEmail, registerPassword);
+      goto('/');
+    } catch (err) {
+      const message = formatPbError(err);
+      error = message ? `邮箱注册失败：${message}` : '邮箱注册失败';
+    } finally {
+      registerLoading = false;
     }
   };
 
@@ -203,131 +270,235 @@
   $: usageDoc = legalDocuments.find((doc) => doc.key === 'usage_policy');
   $: canAgree =
     readStatus.terms_of_service && readStatus.usage_policy && !legalLoading && !legalError;
-  $: canSubmit = agreed && canAgree && !legalError;
 
   onMount(() => {
     void loadLegalDocuments();
+    const media = window.matchMedia('(max-width: 900px)');
+    const updateLayout = () => {
+      isCompact = media.matches;
+      if (!isCompact) {
+        mobileTab = 'legal';
+      }
+    };
+    updateLayout();
+    media.addEventListener('change', updateLayout);
+    return () => {
+      media.removeEventListener('change', updateLayout);
+    };
   });
 </script>
 
 <div class="login">
   <div class="panel">
     <h1>登录</h1>
-    <div class="legal-block">
-      <div class="legal-head">
-        <div>
-          <div class="legal-title">用户协议与隐私政策</div>
-          <div class="legal-sub">请阅读条款内容并滚动到底后勾选同意。</div>
+    {#if isCompact}
+      <div class="mobile-tabs">
+        <button
+          type="button"
+          class:active={mobileTab === 'legal'}
+          on:click={() => (mobileTab = 'legal')}
+        >
+          条款
+        </button>
+        <button
+          type="button"
+          class:active={mobileTab === 'login'}
+          on:click={() => (mobileTab = 'login')}
+        >
+          登录/注册
+        </button>
+      </div>
+    {/if}
+    <div class="panel-body">
+      {#if !isCompact || mobileTab === 'legal'}
+        <div class="legal-block">
+        <div class="legal-head">
+          <div>
+            <div class="legal-title">用户协议与隐私政策</div>
+            <div class="legal-sub">请阅读条款内容并滚动到底后勾选同意。</div>
+          </div>
+          {#if legalLoading}
+            <span class="legal-tag">加载中</span>
+          {:else if legalError}
+            <span class="legal-tag error">加载失败</span>
+          {:else}
+            <span class="legal-tag">{canAgree ? '已读' : '未读'}</span>
+          {/if}
+        </div>
+        <div class="legal-tabs">
+          <button
+            class="legal-tab"
+            class:active={activeDoc === 'terms_of_service'}
+            type="button"
+            on:click={() => selectDoc('terms_of_service')}
+            disabled={legalLoading || Boolean(legalError)}
+          >
+            <span>{termsDoc?.title ?? '用户协议'}</span>
+            {#if readStatus.terms_of_service}
+              <span class="read-tag">已读</span>
+            {/if}
+          </button>
+          <button
+            class="legal-tab"
+            class:active={activeDoc === 'usage_policy'}
+            type="button"
+            on:click={() => selectDoc('usage_policy')}
+            disabled={legalLoading || Boolean(legalError)}
+          >
+            <span>{usageDoc?.title ?? '隐私政策'}</span>
+            {#if readStatus.usage_policy}
+              <span class="read-tag">已读</span>
+            {/if}
+          </button>
         </div>
         {#if legalLoading}
-          <span class="legal-tag">加载中</span>
+          <div class="legal-body placeholder">条款加载中...</div>
         {:else if legalError}
-          <span class="legal-tag error">加载失败</span>
+          <div class="legal-body placeholder error">{legalError}</div>
         {:else}
-          <span class="legal-tag">{canAgree ? '已读' : '未读'}</span>
-        {/if}
-      </div>
-      <div class="legal-tabs">
-        <button
-          class="legal-tab"
-          class:active={activeDoc === 'terms_of_service'}
-          type="button"
-          on:click={() => selectDoc('terms_of_service')}
-          disabled={legalLoading || Boolean(legalError)}
-        >
-          <span>{termsDoc?.title ?? '用户协议'}</span>
-          {#if readStatus.terms_of_service}
-            <span class="read-tag">已读</span>
-          {/if}
-        </button>
-        <button
-          class="legal-tab"
-          class:active={activeDoc === 'usage_policy'}
-          type="button"
-          on:click={() => selectDoc('usage_policy')}
-          disabled={legalLoading || Boolean(legalError)}
-        >
-          <span>{usageDoc?.title ?? '隐私政策'}</span>
-          {#if readStatus.usage_policy}
-            <span class="read-tag">已读</span>
-          {/if}
-        </button>
-      </div>
-      {#if legalLoading}
-        <div class="legal-body placeholder">条款加载中...</div>
-      {:else if legalError}
-        <div class="legal-body placeholder error">{legalError}</div>
-      {:else}
-        <div class="legal-body" bind:this={legalScroll} on:scroll={handleScroll}>
-          <div class="legal-text">
+          <div class="legal-body" bind:this={legalScroll} on:scroll={handleScroll}>
+            <div class="legal-text">
+              {#if activeDoc === 'terms_of_service'}
+                {termsDoc?.body ?? ''}
+              {:else}
+                {usageDoc?.body ?? ''}
+              {/if}
+            </div>
+          </div>
+          <div class="legal-meta">
+            版本：
             {#if activeDoc === 'terms_of_service'}
-              {termsDoc?.body ?? ''}
+              {termsDoc?.version ?? 'draft'}
             {:else}
-              {usageDoc?.body ?? ''}
+              {usageDoc?.version ?? 'draft'}
             {/if}
           </div>
+        {/if}
+        <div class="legal-footer">
+          <label class="agree">
+            <input
+              type="checkbox"
+              bind:checked={agreed}
+              disabled={!canAgree || Boolean(legalError)}
+            />
+            <span>
+              我已阅读并同意《{termsDoc?.title ?? '用户协议'}》《{usageDoc?.title ?? '隐私政策'}》
+            </span>
+          </label>
+          <a class="legal-link" href="/legal" target="_blank" rel="noreferrer">新窗口查看完整条款</a>
         </div>
-        <div class="legal-meta">
-          版本：
-          {#if activeDoc === 'terms_of_service'}
-            {termsDoc?.version ?? 'draft'}
-          {:else}
-            {usageDoc?.version ?? 'draft'}
-          {/if}
         </div>
       {/if}
-      <div class="legal-footer">
-        <label class="agree">
-          <input type="checkbox" bind:checked={agreed} disabled={!canAgree || Boolean(legalError)} />
-          <span>
-            我已阅读并同意《{termsDoc?.title ?? '用户协议'}》《{usageDoc?.title ?? '隐私政策'}》
-          </span>
-        </label>
-        <a class="legal-link" href="/legal" target="_blank" rel="noreferrer">新窗口查看完整条款</a>
-      </div>
+      {#if !isCompact || mobileTab === 'login'}
+        <div class="login-methods">
+        {#if showRegister}
+          <div class="register-block">
+            <div class="password-title">邮箱注册</div>
+            <label>
+              注册邮箱
+              <input
+                type="email"
+                bind:value={registerEmail}
+                autocomplete="username"
+                placeholder="you@example.com"
+              />
+            </label>
+            <label>
+              设置密码
+              <input
+                type="password"
+                bind:value={registerPassword}
+                autocomplete="new-password"
+                placeholder="请输入密码"
+              />
+            </label>
+            <label>
+              确认密码
+              <input
+                type="password"
+                bind:value={registerPasswordConfirm}
+                autocomplete="new-password"
+                placeholder="再次输入密码"
+              />
+            </label>
+            <label>
+              邀请码（可选）
+              <input
+                type="text"
+                bind:value={registerInviteCode}
+                placeholder="填写邀请码可直接发言"
+              />
+            </label>
+            <button
+              class="password-btn"
+              type="button"
+              on:click={registerWithEmail}
+              disabled={
+                registerLoading ||
+                loading ||
+                passwordLoading ||
+                !registerEmail.trim() ||
+                !registerPassword ||
+                !registerPasswordConfirm
+              }
+            >
+              {registerLoading ? '注册中...' : '创建账号'}
+            </button>
+            <div class="password-note">无邀请码可先注册，但发言需要填写邀请码。</div>
+            <button class="link-btn" type="button" on:click={() => (showRegister = false)}>
+              返回登录
+            </button>
+          </div>
+        {:else}
+          <div class="password-block">
+            <div class="password-title">账号密码登录</div>
+            <label>
+              账号邮箱
+              <input
+                type="email"
+                bind:value={email}
+                autocomplete="username"
+                placeholder="admin@example.com"
+              />
+            </label>
+            <label>
+              密码
+              <input
+                type="password"
+                bind:value={password}
+                autocomplete="current-password"
+                placeholder="请输入密码"
+              />
+            </label>
+            <button
+              class="password-btn"
+              type="button"
+              on:click={loginWithPassword}
+              disabled={passwordLoading || loading || registerLoading || !email.trim() || !password}
+            >
+              {passwordLoading ? '登录中...' : '账号密码登录'}
+            </button>
+            <div class="password-note">仅用于管理员账号登录</div>
+            <button class="link-btn" type="button" on:click={() => (showRegister = true)}>
+              没有账号？邮箱注册
+            </button>
+          </div>
+          <button
+            class="github"
+            type="button"
+            on:click={loginWithGithub}
+            disabled={loading || passwordLoading || registerLoading}
+          >
+            {loading ? '登录中...' : '使用 GitHub 登录'}
+          </button>
+          <div class="note">普通用户仅支持 GitHub 登录</div>
+        {/if}
+        {#if error}
+          <div class="error">{error}</div>
+        {/if}
+        </div>
+      {/if}
     </div>
-    <div class="password-block">
-      <div class="password-title">账号密码登录</div>
-      <label>
-        账号邮箱
-        <input
-          type="email"
-          bind:value={email}
-          autocomplete="username"
-          placeholder="admin@example.com"
-        />
-      </label>
-      <label>
-        密码
-        <input
-          type="password"
-          bind:value={password}
-          autocomplete="current-password"
-          placeholder="请输入密码"
-        />
-      </label>
-      <button
-        class="password-btn"
-        type="button"
-        on:click={loginWithPassword}
-        disabled={passwordLoading || loading || !email.trim() || !password}
-      >
-        {passwordLoading ? '登录中...' : '账号密码登录'}
-      </button>
-      <div class="password-note">仅用于管理员账号登录</div>
-    </div>
-    <button
-      class="github"
-      type="button"
-      on:click={loginWithGithub}
-      disabled={loading || passwordLoading || !canSubmit}
-    >
-      {loading ? '登录中...' : '使用 GitHub 登录'}
-    </button>
-    <div class="note">普通用户仅支持 GitHub 登录</div>
-    {#if error}
-      <div class="error">{error}</div>
-    {/if}
   </div>
 </div>
 
@@ -344,17 +515,17 @@
   }
 
   .panel {
-    width: min(420px, 100%);
+    width: min(980px, 100%);
     background: #0b0b0b;
     border: 2px solid #1f1f1f;
     border-radius: 18px;
     padding: 36px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 18px;
   }
 
-  @media (max-width: 600px) {
+  @media (max-width: 900px) {
     .panel {
       padding: 22px 18px;
       border-radius: 16px;
@@ -366,6 +537,47 @@
     font-size: 24px;
   }
 
+  .panel-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .mobile-tabs {
+    display: none;
+    gap: 10px;
+  }
+
+  .mobile-tabs button {
+    flex: 1;
+    border: 1px solid #2a2a2a;
+    border-radius: 999px;
+    padding: 8px 12px;
+    background: #121212;
+    color: #bdbdbd;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .mobile-tabs button.active {
+    background: #a3c101;
+    color: #000;
+    border-color: #a3c101;
+  }
+
+  @media (max-width: 900px) {
+    .mobile-tabs {
+      display: flex;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .panel-body {
+      flex-direction: column;
+      gap: 16px;
+    }
+  }
+
   .legal-block {
     display: flex;
     flex-direction: column;
@@ -374,6 +586,23 @@
     border: 1px solid #1f1f1f;
     background: #0f0f0f;
     padding: 14px;
+    flex: 1.2;
+    min-width: 0;
+  }
+
+  .login-methods {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    flex: 1;
+    min-width: 280px;
+  }
+
+  @media (max-width: 900px) {
+    .legal-block,
+    .login-methods {
+      width: 100%;
+    }
   }
 
   .legal-head {
@@ -517,7 +746,8 @@
     text-decoration: underline;
   }
 
-  .password-block {
+  .password-block,
+  .register-block {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -532,7 +762,8 @@
     color: #fff;
   }
 
-  .password-block label {
+  .password-block label,
+  .register-block label {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -540,7 +771,8 @@
     color: #b5b5b5;
   }
 
-  .password-block input {
+  .password-block input,
+  .register-block input {
     background: #101010;
     border: 2px solid #2a2a2a;
     border-radius: 12px;
@@ -556,6 +788,16 @@
     background: #1f1f1f;
     color: #fff;
     cursor: pointer;
+  }
+
+  .link-btn {
+    border: none;
+    background: transparent;
+    color: #a3c101;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
   }
 
   .password-btn:disabled {

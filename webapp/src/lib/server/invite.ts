@@ -24,6 +24,18 @@ export const verifyInvite = async (admin: PocketBase, user: RecordModel) => {
       });
     }
 
+    const canPost = user.get?.('can_post') ?? user.can_post;
+    const rejectCount = Number(user.get?.('reject_count') ?? user.reject_count ?? 0);
+    if (canPost === false && rejectCount < 3) {
+      try {
+        await admin.collection('users').update(user.id, {
+          can_post: true,
+        });
+      } catch (err) {
+        console.error('invite_can_post_update_failed', err);
+      }
+    }
+
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: 'invite_invalid' };

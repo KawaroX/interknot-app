@@ -1,11 +1,13 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
+    import { browser } from "$app/environment";
     import { fade } from "svelte/transition";
     import { onMount } from "svelte";
     import Window from "$lib/components/common/Window.svelte";
     import Avatar from "$lib/components/common/Avatar.svelte";
     import Level from "$lib/components/common/Level.svelte";
     import { pb } from "$lib/api/pb";
+    import { buildFileUrl } from "$lib/api/files";
     import { closePopup, openCompose, openImage } from "$lib/stores/popup";
     import { setFollow } from "$lib/api/follows";
     import { addFollowing, removeFollowing } from "$lib/stores/follows";
@@ -28,6 +30,11 @@
         REPORT_DETAIL_MAX,
         getGraphemeCount,
     } from "$lib/validation";
+    import { showToast } from "$lib/stores/toast";
+    import { receive, selectedCardId } from "$lib/stores/cardTransition";
+    import { session } from "$lib/stores/session";
+    import { openContextMenu } from "$lib/stores/contextMenu";
+    import { clearPendingReport, pendingReport } from "$lib/stores/report";
 
     export let postId: string;
 
@@ -87,7 +94,15 @@
         };
     };
 
+    const resetActionStatus = () => {
+        actionError = "";
+    };
+
     $: viewerId = pb.authStore.model?.id ?? "";
+    $: currentUser = $session;
+    $: currentUserAvatar = currentUser?.avatar
+        ? (buildFileUrl(currentUser, currentUser.avatar) ?? defaultAvatar)
+        : defaultAvatar;
     $: canFollow = Boolean(post && viewerId && post.author.id !== viewerId);
     $: isAuthor = Boolean(post && viewerId && post.author.id === viewerId);
     $: commentLength = getGraphemeCount(commentText.trim());
@@ -102,6 +117,12 @@
     $: if (!bodyLong) {
         bodyExpanded = true;
     }
+    $: if (post && $pendingReport?.type === "post") {
+        if ($pendingReport.postId === post.id) {
+            openReportForm("post", post.id, post.title);
+            clearPendingReport();
+        }
+    }
 
     const ensureAuth = () => {
         if (!pb.authStore.isValid) {
@@ -115,6 +136,7 @@
         if (!postId) return;
         loading = true;
         loadError = "";
+        actionError = "";
         liked = false;
         postReported = false;
         reportedCommentIds = new Set();
@@ -147,7 +169,7 @@
 
     const submitComment = async () => {
         if (!ensureAuth()) return;
-        actionError = "";
+        resetActionStatus();
         rateLimitError = null;
         const trimmedComment = commentText.trim();
         if (!post || !trimmedComment) return;
@@ -214,7 +236,7 @@
 
     const togglePostLike = async () => {
         if (!ensureAuth()) return;
-        actionError = "";
+        resetActionStatus();
         if (!post) return;
         try {
             const result = await toggleLike(post.id);
@@ -226,9 +248,39 @@
         }
     };
 
+    const buildShareUrl = (postItem: PostDetail) => {
+        if (!browser) return "";
+        const url = new URL("/", window.location.origin);
+        url.searchParams.set("post", postItem.id);
+        return url.toString();
+    };
+
+    const sharePost = async () => {
+        if (!post || !browser) return;
+        resetActionStatus();
+        const shareUrl = buildShareUrl(post);
+        try {
+            if (navigator.share) {
+                await navigator.share({ url: shareUrl });
+                showToast("已分享");
+                return;
+            }
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(shareUrl);
+                showToast("已复制到剪贴板");
+                return;
+            }
+            showToast("当前浏览器不支持分享或复制");
+        } catch (err) {
+            const error = err as Error;
+            if (error?.name === "AbortError") return;
+            showToast("分享失败");
+        }
+    };
+
     const toggleFollow = async () => {
         if (!ensureAuth()) return;
-        actionError = "";
+        resetActionStatus();
         if (!post || !canFollow) return;
         const nextFollow = !authorFollowed;
         try {
@@ -273,7 +325,7 @@
         label: string,
     ) => {
         if (!ensureAuth()) return;
-        actionError = "";
+        resetActionStatus();
         reportError = "";
         if (targetType === "post" && postReported) return;
         if (targetType === "comment" && reportedCommentIds.has(targetId))
@@ -347,6 +399,136 @@
             reportSubmitting = false;
         }
     };
+
+    const copyText = async (text: string, successMessage: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast(successMessage);
+        } catch (err) {
+            showToast("复制失败");
+        }
+    };
+
+    const saveImage = (url: string) => {
+        try {
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "image";
+            link.rel = "noopener";
+            link.target = "_blank";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            showToast("已开始保存");
+        } catch (err) {
+            showToast("保存失败");
+        }
+    };
+
+    const openImageMenu = (event: MouseEvent) => {
+        if (!post?.coverUrl) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            items: [
+                {
+                    label: "打开",
+                    action: () => openImage(post.coverUrl ?? ""),
+                },
+                {
+                    label: "保存图片",
+                    action: () => saveImage(post.coverUrl ?? ""),
+                },
+                {
+                    label: liked ? "取消点赞" : "点赞",
+                    action: togglePostLike,
+                },
+                { label: "分享", action: sharePost },
+                {
+                    label: postReported ? "已举报" : "举报",
+                    action: reportPost,
+                    danger: true,
+                    disabled: postReported,
+                },
+            ],
+        });
+    };
+
+    const openPostMenu = (event: MouseEvent) => {
+        if (!post) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            items: [
+                {
+                    label: authorFollowed ? "取消关注" : "关注",
+                    action: toggleFollow,
+                },
+                {
+                    label: liked ? "取消点赞" : "点赞",
+                    action: togglePostLike,
+                },
+                { label: "分享", action: sharePost },
+                {
+                    label: "举报",
+                    action: reportPost,
+                    danger: true,
+                },
+                {
+                    label: "复制正文",
+                    action: () => copyText(post.body ?? "", "已复制正文"),
+                },
+            ],
+        });
+    };
+
+    const followCommentAuthor = async (comment: CommentItem) => {
+        if (!ensureAuth()) return;
+        try {
+            const result = await setFollow(comment.author.id, true);
+            if (result.following) {
+                addFollowing({
+                    ...comment.author,
+                    followedAt: new Date().toISOString(),
+                });
+                showToast("已关注评论者");
+            } else {
+                showToast("关注失败");
+            }
+        } catch (err) {
+            showToast("关注失败");
+        }
+    };
+
+    const openCommentMenu = (event: MouseEvent, comment: CommentItem) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const reported = reportedCommentIds.has(comment.id);
+        openContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            items: [
+                {
+                    label: "关注评论者",
+                    action: () => followCommentAuthor(comment),
+                },
+                {
+                    label: reported ? "已举报" : "举报",
+                    action: () => reportComment(comment),
+                    danger: true,
+                    disabled: reported,
+                },
+                {
+                    label: "复制评论",
+                    action: () => copyText(comment.body, "已复制评论"),
+                },
+            ],
+        });
+    };
 </script>
 
 <div class="popup-shell" transition:fade={{ duration: 100 }}>
@@ -376,177 +558,263 @@
                 </div>
             {/if}
         </svelte:fragment>
+        <svelte:fragment slot="header-actions">
+            {#if isAuthor}
+                <button
+                    type="button"
+                    class="action edit"
+                    on:click={handleEdit}
+                >
+                    编辑
+                </button>
+            {/if}
+        </svelte:fragment>
         {#if loading}
             <div class="loading">加载中...</div>
         {:else if loadError}
             <div class="loading">{loadError}</div>
         {:else if post}
             {@const time = getPostTime(post)}
-            <button
-                class="image"
-                type="button"
-                aria-label="查看图片"
-                on:click={() => post?.coverUrl && openImage(post.coverUrl)}
-            >
-                {#if post.coverUrl}
-                    <img src={post.coverUrl} alt="" />
-                {:else}
-                    <img src="/images/empty.webp" alt="" />
-                {/if}
-            </button>
-            <div class="message">
-                <div class="title">{post.title}</div>
-                <div class="meta">
-                    <span>{time.label}：{formatDate(time.value)}</span>
-                    <span>IP属地：{post.ipRegion || "未知"}</span>
-                </div>
-                {#if post.tags && post.tags.length > 0}
-                    <div class="tags">
-                        {#each post.tags as tag}
-                            <span class="tag">#{tag}</span>
-                        {/each}
-                    </div>
-                {/if}
-                <div class="text" class:collapsed={bodyLong && !bodyExpanded}>
-                    {post.body}
-                </div>
-                {#if bodyLong}
+            <div class="split-layout">
+                <div class="split-left">
                     <button
-                        class="read-more"
+                        class="image"
                         type="button"
-                        on:click={() => (bodyExpanded = !bodyExpanded)}
+                        aria-label="查看图片"
+                        in:receive={{ key: $selectedCardId }}
+                        on:click={() =>
+                            post?.coverUrl && openImage(post.coverUrl)}
+                        on:contextmenu={openImageMenu}
                     >
-                        {bodyExpanded ? "收起" : "查看全文"}
-                    </button>
-                {/if}
-                <div class="actions">
-                    <button
-                        type="button"
-                        class="action"
-                        class:liked
-                        on:click={togglePostLike}
-                    >
-                        {#if liked}
-                            <span class="action-icon" aria-hidden="true">
-                                <svg
-                                    viewBox="0 0 122.88 106.16"
-                                    role="img"
-                                    aria-hidden="true"
-                                >
-                                    <path
-                                        fill="currentColor"
-                                        fill-rule="evenodd"
-                                        clip-rule="evenodd"
-                                        d="M4.02 44.6h27.36c2.21 0 4.02 1.81 4.02 4.03v53.51c0 2.21-1.81 4.03-4.02 4.03H4.02c-2.21 0-4.02-1.81-4.02-4.03V48.63c0-2.22 1.81-4.03 4.02-4.03zM63.06 4.46c2.12-10.75 19.72-.85 20.88 16.48.35 5.3-.2 11.47-1.5 18.36h25.15c10.46.41 19.59 7.9 13.14 20.2 1.47 5.36 1.69 11.65-2.3 14.13.5 8.46-1.84 13.7-6.22 17.84-.29 4.23-1.19 7.99-3.23 10.88-3.38 4.77-6.12 3.63-11.44 3.63H55.07c-6.73 0-10.4-1.85-14.8-7.37V51.31c12.66-3.42 19.39-20.74 22.79-32.11V4.46z"
-                                    />
-                                </svg>
-                            </span>
-                            <span class="action-count">{likeCount}</span>
+                        {#if post.coverUrl}
+                            <img src={post.coverUrl} alt="" />
                         {:else}
-                            <span class="action-icon" aria-hidden="true">
-                                <svg
-                                    viewBox="0 0 122.88 105.01"
-                                    role="img"
-                                    aria-hidden="true"
-                                >
-                                    <path
-                                        fill="currentColor"
-                                        fill-rule="evenodd"
-                                        d="M62.63,6.25c0.56-2.85,2.03-4.68,4.04-5.61c1.63-0.76,3.54-0.83,5.52-0.31c1.72,0.45,3.53,1.37,5.26,2.69 c4.69,3.57,9.08,10.3,9.64,18.71c0.17,2.59,0.12,5.35-0.12,8.29c-0.16,1.94-0.41,3.98-0.75,6.1h19.95l0.09,0.01 c3.24,0.13,6.38,0.92,9.03,2.3c2.29,1.2,4.22,2.84,5.56,4.88c1.38,2.1,2.13,4.6,2.02,7.46c-0.08,2.12-0.65,4.42-1.81,6.87 c0.66,2.76,0.97,5.72,0.54,8.32c-0.36,2.21-1.22,4.17-2.76,5.63c0.08,3.65-0.41,6.71-1.39,9.36c-1.01,2.72-2.52,4.98-4.46,6.98 c-0.17,1.75-0.45,3.42-0.89,4.98c-0.55,1.96-1.36,3.76-2.49,5.35l0,0c-3.4,4.8-6.12,4.69-10.43,4.51c-0.6-0.02-1.24-0.05-2.24-0.05 l-39.03,0c-3.51,0-6.27-0.51-8.79-1.77c-2.49-1.25-4.62-3.17-6.89-6.01l-0.58-1.66V47.78l1.98-0.53 c5.03-1.36,8.99-5.66,12.07-10.81c3.16-5.3,5.38-11.5,6.9-16.51V6.76L62.63,6.25L62.63,6.25L62.63,6.25z M4,43.02h29.08 c2.2,0,4,1.8,4,4v53.17c0,2.2-1.8,4-4,4l-29.08,0c-2.2,0-4-1.8-4-4V47.02C0,44.82,1.8,43.02,4,43.02L4,43.02L4,43.02z M68.9,5.48 c-0.43,0.2-0.78,0.7-0.99,1.56V20.3l-0.12,0.76c-1.61,5.37-4.01,12.17-7.55,18.1c-3.33,5.57-7.65,10.36-13.27,12.57v40.61 c1.54,1.83,2.96,3.07,4.52,3.85c1.72,0.86,3.74,1.2,6.42,1.2l39.03,0c0.7,0,1.6,0.04,2.45,0.07c2.56,0.1,4.17,0.17,5.9-2.27v-0.01 c0.75-1.06,1.3-2.31,1.69-3.71c0.42-1.49,0.67-3.15,0.79-4.92l0.82-1.75c1.72-1.63,3.03-3.46,3.87-5.71 c0.86-2.32,1.23-5.11,1.02-8.61l-0.09-1.58l1.34-0.83c0.92-0.57,1.42-1.65,1.63-2.97c0.34-2.1-0.02-4.67-0.67-7.06l0.21-1.93 c1.08-2.07,1.6-3.92,1.67-5.54c0.06-1.68-0.37-3.14-1.17-4.35c-0.84-1.27-2.07-2.31-3.56-3.09c-1.92-1.01-4.24-1.59-6.66-1.69v0.01 l-26.32,0l0.59-3.15c0.57-3.05,0.98-5.96,1.22-8.72c0.23-2.7,0.27-5.21,0.12-7.49c-0.45-6.72-3.89-12.04-7.56-14.83 c-1.17-0.89-2.33-1.5-3.38-1.77C70.04,5.27,69.38,5.26,68.9,5.48L68.9,5.48L68.9,5.48z"
-                                    />
-                                </svg>
-                            </span>
-                            <span>点赞</span>
-                            <span class="action-count">{likeCount}</span>
+                            <img src="/images/empty.webp" alt="" />
                         {/if}
                     </button>
-                    {#if isAuthor}
+                    <div class="actions">
                         <button
                             type="button"
-                            class="action edit"
-                            on:click={handleEdit}
+                            class="action"
+                            class:liked
+                            on:click={togglePostLike}
                         >
-                            编辑
+                            {#if liked}
+                                <span class="action-icon" aria-hidden="true">
+                                    <svg
+                                        viewBox="0 0 122.88 106.16"
+                                        role="img"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            fill="currentColor"
+                                            fill-rule="evenodd"
+                                            clip-rule="evenodd"
+                                            d="M4.02 44.6h27.36c2.21 0 4.02 1.81 4.02 4.03v53.51c0 2.21-1.81 4.03-4.02 4.03H4.02c-2.21 0-4.02-1.81-4.02-4.03V48.63c0-2.22 1.81-4.03 4.02-4.03zM63.06 4.46c2.12-10.75 19.72-.85 20.88 16.48.35 5.3-.2 11.47-1.5 18.36h25.15c10.46.41 19.59 7.9 13.14 20.2 1.47 5.36 1.69 11.65-2.3 14.13.5 8.46-1.84 13.7-6.22 17.84-.29 4.23-1.19 7.99-3.23 10.88-3.38 4.77-6.12 3.63-11.44 3.63H55.07c-6.73 0-10.4-1.85-14.8-7.37V51.31c12.66-3.42 19.39-20.74 22.79-32.11V4.46z"
+                                        />
+                                    </svg>
+                                </span>
+                                <span class="action-count">{likeCount}</span>
+                            {:else}
+                                <span class="action-icon" aria-hidden="true">
+                                    <svg
+                                        viewBox="0 0 122.88 105.01"
+                                        role="img"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            fill="currentColor"
+                                            fill-rule="evenodd"
+                                            d="M62.63,6.25c0.56-2.85,2.03-4.68,4.04-5.61c1.63-0.76,3.54-0.83,5.52-0.31c1.72,0.45,3.53,1.37,5.26,2.69 c4.69,3.57,9.08,10.3,9.64,18.71c0.17,2.59.12,5.35-.12,8.29c-0.16,1.94-.41,3.98-.75,6.1h19.95l.09,0.01 c3.24,0.13,6.38,0.92,9.03,2.3c2.29,1.2,4.22,2.84,5.56,4.88c1.38,2.1,2.13,4.6,2.02,7.46c-0.08,2.12-.65,4.42-1.81,6.87 c0.66,2.76,0.97,5.72,0.54,8.32c-0.36,2.21-1.22,4.17-2.76,5.63c0.08,3.65-.41,6.71-1.39,9.36c-1.01,2.72-2.52,4.98-4.46,6.98 c-0.17,1.75-.45,3.42-.89,4.98c-0.55,1.96-1.36,3.76-2.49,5.35l0,0c-3.4 4.8-6.12 4.69-10.43 4.51c-0.6-.02-1.24-.05-2.24-.05 l-39.03 0c-3.51 0-6.27-.51-8.79-1.77c-2.49-1.25-4.62-3.17-6.89-6.01l-0.58-1.66V47.78l1.98-0.53 c5.03-1.36,8.99-5.66,12.07-10.81c3.16-5.3,5.38-11.5,6.9-16.51V6.76L62.63,6.25L62.63,6.25L62.63,6.25z M4,43.02h29.08 c2.2,0,4,1.8,4,4v53.17c0,2.2-1.8,4-4,4l-29.08,0c-2.2,0-4-1.8-4-4V47.02C0,44.82,1.8,43.02,4,43.02L4,43.02L4,43.02z M68.9,5.48 c-0.43,0.2-0.78,0.7-.99,1.56V20.3l-0.12,0.76c-1.61,5.37-4.01,12.17-7.55,18.1c-3.33,5.57-7.65,10.36-13.27,12.57v40.61 c1.54,1.83,2.96,3.07,4.52,3.85c1.72.86 3.74 1.2 6.42 1.2l39.03 0c0.7 0 1.6.04 2.45.07 2.56.1,4.17.17 5.9-2.27v-0.01 c0.75-1.06 1.3-2.31 1.69-3.71c0.42-1.49.67-3.15.79-4.92l0.82-1.75c1.72-1.63,3.03-3.46,3.87-5.71 c0.86-2.32,1.23-5.11,1.02-8.61l-0.09-1.58l1.34-0.83c0.92-0.57,1.42-1.65,1.63-2.97c0.34-2.1-.02-4.67-.67-7.06l0.21-1.93 c1.08-2.07,1.6-3.92,1.67-5.54c0.06-1.68-.37-3.14-1.17-4.35c-0.84-1.27-2.07-2.31-3.56-3.09c-1.92-1.01-4.24-1.59-6.66-1.69v0.01 l-26.32 0l0.59-3.15c0.57-3.05,0.98-5.96,1.22-8.72c0.23-2.7,0.27-5.21.12-7.49c-0.45-6.72-3.89-12.04-7.56-14.83 c-1.17-0.89-2.33-1.5-3.38-1.77C70.04,5.27,69.38,5.26,68.9,5.48L68.9,5.48L68.9,5.48z"
+                                        />
+                                    </svg>
+                                </span>
+                                <span>点赞</span>
+                                <span class="action-count">{likeCount}</span>
+                            {/if}
                         </button>
-                    {/if}
-                    <button
-                        type="button"
-                        class="action"
-                        class:reported={postReported}
-                        on:click={reportPost}
-                        disabled={postReported}
-                    >
-                        {postReported ? "已举报" : "举报"}
-                    </button>
+                        <button type="button" class="action" on:click={sharePost}>
+                            分享
+                        </button>
+                        <button
+                            type="button"
+                            class="action report-action"
+                            class:reported={postReported}
+                            on:click={reportPost}
+                            disabled={postReported}
+                        >
+                            {postReported ? "已举报" : "举报"}
+                        </button>
+                    </div>
                 </div>
-                {#if actionError}
-                    <div class="action-error">{actionError}</div>
-                {/if}
-                <div class="comment-list">
-                    {#each post.comments as comment}
-                        <div class="comment">
+                <div class="split-right">
+                    <div class="message" on:contextmenu={openPostMenu}>
+                        <div class="title">{post.title}</div>
+                        <div class="meta">
+                            <span>{time.label}：{formatDate(time.value)}</span>
+                            <span>IP属地：{post.ipRegion || "未知"}</span>
+                        </div>
+                        {#if post.tags && post.tags.length > 0}
+                            <div class="tags">
+                                {#each post.tags as tag}
+                                    <span class="tag">#{tag}</span>
+                                {/each}
+                            </div>
+                        {/if}
+                        <div
+                            class="text"
+                            class:collapsed={bodyLong && !bodyExpanded}
+                        >
+                            {post.body}
+                        </div>
+                        {#if bodyLong}
+                            <button
+                                class="read-more"
+                                type="button"
+                                on:click={() => (bodyExpanded = !bodyExpanded)}
+                            >
+                                {bodyExpanded ? "收起" : "查看全文"}
+                            </button>
+                        {/if}
+                        <div class="actions">
+                            <button
+                                type="button"
+                                class="action"
+                                class:liked
+                                on:click={togglePostLike}
+                            >
+                                {#if liked}
+                                    <span
+                                        class="action-icon"
+                                        aria-hidden="true"
+                                    >
+                                        <svg
+                                            viewBox="0 0 122.88 106.16"
+                                            role="img"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                fill="currentColor"
+                                                fill-rule="evenodd"
+                                                clip-rule="evenodd"
+                                                d="M4.02 44.6h27.36c2.21 0 4.02 1.81 4.02 4.03v53.51c0 2.21-1.81 4.03-4.02 4.03H4.02c-2.21 0-4.02-1.81-4.02-4.03V48.63c0-2.22 1.81-4.03 4.02-4.03zM63.06 4.46c2.12-10.75 19.72-.85 20.88 16.48.35 5.3-.2 11.47-1.5 18.36h25.15c10.46.41 19.59 7.9 13.14 20.2 1.47 5.36 1.69 11.65-2.3 14.13.5 8.46-1.84 13.7-6.22 17.84-.29 4.23-1.19 7.99-3.23 10.88-3.38 4.77-6.12 3.63-11.44 3.63H55.07c-6.73 0-10.4-1.85-14.8-7.37V51.31c12.66-3.42 19.39-20.74 22.79-32.11V4.46z"
+                                            />
+                                        </svg>
+                                    </span>
+                                    <span class="action-count">{likeCount}</span
+                                    >
+                                {:else}
+                                    <span
+                                        class="action-icon"
+                                        aria-hidden="true"
+                                    >
+                                        <svg
+                                            viewBox="0 0 122.88 105.01"
+                                            role="img"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                fill="currentColor"
+                                                fill-rule="evenodd"
+                                                d="M62.63,6.25c0.56-2.85,2.03-4.68,4.04-5.61c1.63-0.76,3.54-0.83,5.52-0.31c1.72,0.45,3.53,1.37,5.26,2.69 c4.69,3.57,9.08,10.3,9.64,18.71c0.17,2.59,0.12,5.35-0.12,8.29c-0.16,1.94-0.41,3.98-0.75,6.1h19.95l0.09,0.01 c3.24,0.13,6.38,0.92,9.03,2.3c2.29,1.2,4.22,2.84,5.56,4.88c1.38,2.1,2.13,4.6,2.02,7.46c-0.08,2.12-0.65,4.42-1.81,6.87 c0.66,2.76,0.97,5.72,0.54,8.32c-0.36,2.21-1.22,4.17-2.76,5.63c0.08,3.65-0.41,6.71-1.39,9.36c-1.01,2.72-2.52,4.98-4.46,6.98 c-0.17,1.75-0.45,3.42-0.89,4.98c-0.55,1.96-1.36,3.76-2.49,5.35l0,0c-3.4,4.8-6.12,4.69-10.43,4.51c-0.6-0.02-1.24-0.05-2.24-0.05 l-39.03,0c-3.51,0-6.27-0.51-8.79-1.77c-2.49-1.25-4.62-3.17-6.89-6.01l-0.58-1.66V47.78l1.98-0.53 c5.03-1.36,8.99-5.66,12.07-10.81c3.16-5.3,5.38-11.5,6.9-16.51V6.76L62.63,6.25L62.63,6.25L62.63,6.25z M4,43.02h29.08 c2.2,0,4,1.8,4,4v53.17c0,2.2-1.8,4-4,4l-29.08,0c-2.2,0-4-1.8-4-4V47.02C0,44.82,1.8,43.02,4,43.02L4,43.02L4,43.02z M68.9,5.48 c-0.43,0.2-0.78,0.7-0.99,1.56V20.3l-0.12,0.76c-1.61,5.37-4.01,12.17-7.55,18.1c-3.33,5.57-7.65,10.36-13.27,12.57v40.61 c1.54,1.83,2.96,3.07,4.52,3.85c1.72,0.86,3.74,1.2,6.42,1.2l39.03,0c0.7,0,1.6,0.04,2.45,0.07c2.56,0.1,4.17,0.17,5.9-2.27v-0.01 c0.75-1.06,1.3-2.31,1.69-3.71c0.42-1.49,0.67-3.15,0.79-4.92l0.82-1.75c1.72-1.63,3.03-3.46,3.87-5.71 c0.86-2.32,1.23-5.11,1.02-8.61l-0.09-1.58l1.34-0.83c0.92-0.57,1.42-1.65,1.63-2.97c0.34-2.1-0.02-4.67-0.67-7.06l0.21-1.93 c1.08-2.07,1.6-3.92,1.67-5.54c0.06-1.68-0.37-3.14-1.17-4.35c-0.84-1.27-2.07-2.31-3.56-3.09c-1.92-1.01-4.24-1.59-6.66-1.69v0.01 l-26.32,0l0.59-3.15c0.57-3.05,0.98-5.96,1.22-8.72c0.23-2.7,0.27-5.21,0.12-7.49c-0.45-6.72-3.89-12.04-7.56-14.83 c-1.17-0.89-2.33-1.5-3.38-1.77C70.04,5.27,69.38,5.26,68.9,5.48L68.9,5.48L68.9,5.48z"
+                                            />
+                                        </svg>
+                                    </span>
+                                    <span>点赞</span>
+                                    <span class="action-count">{likeCount}</span
+                                    >
+                                {/if}
+                            </button>
+                            <button
+                                type="button"
+                                class="action"
+                                on:click={sharePost}
+                            >
+                                分享
+                            </button>
+                            <button
+                                type="button"
+                                class="action"
+                                class:reported={postReported}
+                                on:click={reportPost}
+                                disabled={postReported}
+                            >
+                                {postReported ? "已举报" : "举报"}
+                            </button>
+                        </div>
+                        {#if actionError}
+                            <div class="action-error">{actionError}</div>
+                        {/if}
+                        <div class="comment-list">
+                        {#each post.comments as comment, index}
+                                <div
+                                    class="comment"
+                                    on:contextmenu={(event) =>
+                                        openCommentMenu(event, comment)}
+                                >
+                                    <Avatar
+                                        class="comment-avatar"
+                                        src={comment.author.avatarUrl ??
+                                            defaultAvatar}
+                                        size={36}
+                                    />
+                                    <div class="comment-content">
+                                        <div class="comment-name">
+                                            <span>{comment.author.name}</span>
+                                            <span class="floor">
+                                                {index + 1}F
+                                            </span>
+                                        </div>
+                                        <div class="comment-meta">
+                                            <span
+                                                >{formatDate(
+                                                    comment.createdAt,
+                                                )}</span
+                                            >
+                                            <span
+                                                >IP属地：{comment.ipRegion ||
+                                                    "未知"}</span
+                                            >
+                                        </div>
+                                        <div class="comment-text">
+                                            {comment.body}
+                                        </div>
+                                    </div>
+                                </div>
+                            {/each}
+                        </div>
+                        <div class="no-more">- 已无更多评论 -</div>
+                    </div>
+                    <div class="input-footer">
+                        <form
+                            class="input"
+                            on:submit|preventDefault={submitComment}
+                        >
                             <Avatar
-                                class="comment-avatar"
-                                src={comment.author.avatarUrl ?? defaultAvatar}
+                                class="input-avatar"
+                                src={currentUserAvatar}
                                 size={36}
                             />
-                            <div class="comment-content">
-                                <div class="comment-name">
-                                    <span>{comment.author.name}</span>
-                                    <button
-                                        type="button"
-                                        class="floor"
-                                        class:reported={reportedCommentIds.has(
-                                            comment.id,
-                                        )}
-                                        on:click={() => reportComment(comment)}
-                                        disabled={reportedCommentIds.has(
-                                            comment.id,
-                                        )}
-                                    >
-                                        {reportedCommentIds.has(comment.id)
-                                            ? "已举报"
-                                            : "举报"}
-                                    </button>
-                                </div>
-                                <div class="comment-meta">
-                                    <span>{formatDate(comment.createdAt)}</span>
-                                    <span
-                                        >IP属地：{comment.ipRegion ||
-                                            "未知"}</span
-                                    >
-                                </div>
-                                <div class="comment-text">{comment.body}</div>
+                            <input
+                                type="text"
+                                placeholder="回复"
+                                bind:value={commentText}
+                            />
+                            <div
+                                class="counter"
+                                class:overlimit={commentOverLimit}
+                            >
+                                {commentLength}/{COMMENT_MAX}
                             </div>
-                        </div>
-                    {/each}
+                            <button class="btn" type="submit"> 回复 </button>
+                        </form>
+                        {#if actionError}
+                            <div class="input-error">{actionError}</div>
+                        {/if}
+                    </div>
                 </div>
-                <div class="no-more">- 已无更多评论 -</div>
             </div>
         {/if}
-        <svelte:fragment slot="footer">
-            {#if post}
-                <form class="input" on:submit|preventDefault={submitComment}>
-                    <Avatar
-                        class="input-avatar"
-                        src={post.author.avatarUrl ?? defaultAvatar}
-                        size={36}
-                    />
-                    <input
-                        type="text"
-                        placeholder="回复"
-                        bind:value={commentText}
-                    />
-                    <div class="counter" class:overlimit={commentOverLimit}>
-                        {commentLength}/{COMMENT_MAX}
-                    </div>
-                    <button class="btn" type="submit"> 回复 </button>
-                </form>
-                {#if actionError}
-                    <div class="input-error">{actionError}</div>
-                {/if}
-            {/if}
-        </svelte:fragment>
     </Window>
     {#if reportOpen}
         <div
@@ -617,6 +885,42 @@
         padding: 20px;
     }
 
+    :global(.message-window .content) {
+        bottom: 0px;
+        left: 0;
+        right: 0;
+        padding: 0;
+    }
+
+    .split-layout {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        gap: 0;
+        align-items: stretch;
+    }
+
+    .split-left {
+        display: flex;
+        flex: 0 0 50%;
+        align-items: flex-start;
+        position: relative;
+    }
+
+    .split-right {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+        gap: 8px;
+        padding: 12px 12px 12px 16px;
+    }
+
+    .input-footer {
+        flex-shrink: 0;
+        padding: 0 4px 4px;
+    }
+
     .user {
         display: flex;
         align-items: center;
@@ -659,17 +963,15 @@
         align-items: center;
         overflow: hidden;
         box-sizing: border-box;
-        flex: 0 0 40%;
-        width: 40%;
+        width: 100%;
         aspect-ratio: 3 / 4;
         max-height: 100%;
-        border: 3px solid rgba(100, 100, 100, 0.5);
-        border-radius: 20px;
+        /*border-radius: 20px;*/
+        border: 0px;
         background: transparent;
         padding: 0;
         cursor: pointer;
-        align-self: center;
-        appearance: none;
+        /*appearance: none;*/
     }
 
     .image img {
@@ -684,10 +986,10 @@
         flex: 1;
         flex-direction: column;
         overflow-x: hidden;
-        overflow-y: scroll;
+        overflow-y: auto;
         box-sizing: border-box;
-        margin-left: 20px;
-        padding: 10px 10px 10px 20px;
+        min-height: 0;
+        padding: 12px 16px;
         width: 100%;
         border-radius: 20px;
         background: #000;
@@ -785,10 +1087,32 @@
     }
 
     .actions {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        z-index: 2;
         display: flex;
+        flex-direction: column;
+        align-items: flex-end;
         gap: 8px;
-        margin-top: 16px;
-        margin-bottom: 16px;
+        opacity: 0;
+        transform: translateX(18px);
+        pointer-events: none;
+        transition:
+            transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 0.2s ease;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    .split-left:hover .actions {
+        opacity: 1;
+        transform: translateX(0);
+        pointer-events: auto;
+    }
+
+    .split-right .actions {
+        display: none;
     }
 
     .action-error {
@@ -803,9 +1127,13 @@
         border: none;
         border-radius: 12px;
         padding: 6px 12px;
-        background: #1b1b1b;
+        background: rgba(27, 27, 27, 0.6);
         color: #fff;
         cursor: pointer;
+        box-shadow:
+            0 8px 16px rgba(0, 0, 0, 0.25),
+            0 0 0 1px rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(4px);
     }
 
     .action:disabled {
@@ -814,13 +1142,19 @@
     }
 
     .action.liked {
-        background: #a3c101;
-        color: #000;
+        background: rgba(163, 193, 1, 0.62);
+        color: #fff;
+        box-shadow:
+            0 8px 18px rgba(163, 193, 1, 0.35),
+            0 0 0 1px rgba(163, 193, 1, 0.35);
     }
 
     .action.reported {
-        background: #c23a2b;
+        background: rgba(194, 58, 43, 0.62);
         color: #fff;
+        box-shadow:
+            0 8px 18px rgba(194, 58, 43, 0.35),
+            0 0 0 1px rgba(194, 58, 43, 0.35);
     }
 
     .action.edit {
@@ -852,13 +1186,27 @@
     }
 
     .action:hover:not(.reported) {
-        background: #a3c101;
-        color: #000;
+        background: rgba(163, 193, 1, 0.7);
+        color: #fff;
+        box-shadow:
+            0 8px 18px rgba(163, 193, 1, 0.35),
+            0 0 0 1px rgba(163, 193, 1, 0.35);
+    }
+
+    .action.report-action:hover {
+        background: rgba(194, 58, 43, 0.7);
+        color: #fff;
+        box-shadow:
+            0 8px 18px rgba(194, 58, 43, 0.35),
+            0 0 0 1px rgba(194, 58, 43, 0.35);
     }
 
     .action.reported:hover {
-        background: #c23a2b;
+        background: rgba(194, 58, 43, 0.62);
         color: #fff;
+        box-shadow:
+            0 8px 18px rgba(194, 58, 43, 0.35),
+            0 0 0 1px rgba(194, 58, 43, 0.35);
     }
 
     .comment {
@@ -903,20 +1251,9 @@
         background-color: #615f62;
         font-weight: bold;
         font-size: 12px;
-        cursor: pointer;
-        user-select: none;
-        border: none;
-        color: #000;
-    }
-
-    .floor:disabled {
         cursor: default;
-        opacity: 0.8;
-    }
-
-    .floor.reported {
-        background-color: #c23a2b;
-        color: #fff;
+        user-select: none;
+        color: #000;
     }
 
     .comment-text {
@@ -944,49 +1281,36 @@
     }
 
     .input {
-        position: absolute;
-        right: 20px;
-        bottom: 20px;
+        position: relative;
         display: flex;
         align-items: center;
         box-sizing: border-box;
-        width: calc(70% - 82.5px);
-        height: 40px;
+        width: 100%;
+        height: 44px;
         border: 4px solid #313131;
-        border-radius: 20px;
+        border-radius: 22px;
         background-color: #000;
         font-size: 16px;
-        opacity: 0;
-        transition:
-            transform 0.15s linear,
-            opacity 0.2s;
-        transform: translateY(50%);
     }
 
     .input-error {
-        position: absolute;
-        right: 20px;
-        bottom: 66px;
+        margin-top: 6px;
+        padding-left: 12px;
         color: #ff7b7b;
         font-size: 12px;
     }
 
-    :global(.message-window:hover .input),
-    .input:focus-within {
-        opacity: 1;
-        transform: translateY(0);
-    }
-
     :global(.input .input-avatar) {
         position: absolute;
-        left: -10px;
+        top: 50%;
+        transform: translateY(-50%);
     }
 
     .input input {
         flex: 1;
         overflow: hidden;
         box-sizing: border-box;
-        padding: 0 10px 0 46px;
+        padding: 0 10px 0 56px;
         width: 100px;
         height: 100%;
         outline: none;
@@ -1128,30 +1452,40 @@
     }
 
     @media screen and (max-width: 700px) and (max-aspect-ratio: 1 / 1) {
-        .image {
+        .split-layout {
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .split-left {
             flex: none;
-            flex-shrink: 0;
+            width: 100%;
+        }
+
+        .split-right {
+            flex: 1;
+            gap: 8px;
+        }
+
+        .image {
             width: 100%;
             max-width: none;
             aspect-ratio: 3 / 4;
         }
 
         .message {
-            flex: 1 0 0%;
+            flex: 1 0 auto;
             overflow: unset;
-            margin-top: 20px;
-            margin-left: 0;
-            width: 100%;
+            padding: 12px;
+        }
+
+        .input-footer {
+            padding: 0;
         }
 
         .input {
-            bottom: 0;
-            left: 0;
-            width: 100%;
             border: 4px solid #000;
-            border-radius: 10px;
-            opacity: 1;
-            transform: translateY(0);
+            border-radius: 12px;
         }
 
         :global(.input .input-avatar) {

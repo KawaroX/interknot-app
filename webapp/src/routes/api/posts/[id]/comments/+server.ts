@@ -43,16 +43,24 @@ export const POST = async ({ params, request, getClientAddress }) => {
       return json({ error: 'body_too_long' }, { status: 400 });
     }
 
+    const canPost = user.get?.('can_post') ?? user.can_post;
+    const rejectCount = Number(user.get?.('reject_count') ?? user.reject_count ?? 0);
+    if (canPost === false && rejectCount >= 3) {
+      return json({ error: 'can_post_disabled' }, { status: 403 });
+    }
+
     const inviteRequired = (env.PUBLIC_INVITE_REQUIRED || '').toLowerCase() === 'true';
-    if (inviteRequired) {
+    const shouldVerifyInvite = inviteRequired || canPost === false;
+    let inviteOk = false;
+    if (shouldVerifyInvite && canPost !== true) {
       const invite = await verifyInvite(admin, user);
       if (!invite.ok) {
         return json({ error: invite.reason }, { status: 403 });
       }
+      inviteOk = true;
     }
 
-    const canPost = user.get?.('can_post') ?? user.can_post;
-    if (canPost === false) {
+    if (canPost === false && !inviteOk) {
       return json({ error: 'can_post_disabled' }, { status: 403 });
     }
 

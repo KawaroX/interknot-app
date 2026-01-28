@@ -10,6 +10,7 @@
   import { loadMyPosts, myPosts, myPostsLoading } from '$lib/stores/myPosts';
   import { deletePost } from '$lib/api/posts';
   import { setFollow } from '$lib/api/follows';
+  import { checkUsernameAvailability } from '$lib/api/me';
   import { loadFollowing, following, followingLoading, removeFollowing } from '$lib/stores/follows';
   import { updateAuthorFollow } from '$lib/stores/posts';
   import { openMessage, openConfirm } from '$lib/stores/popup';
@@ -78,6 +79,12 @@
     avatarFile = target.files?.[0] ?? null;
   };
 
+  const getFieldError = (err: unknown, field: string) => {
+    if (!err || typeof err !== 'object') return '';
+    const payload = err as { data?: { data?: Record<string, { message?: string }> } };
+    return payload.data?.data?.[field]?.message ?? '';
+  };
+
   const saveProfile = async () => {
     if (!$session) return;
     error = '';
@@ -94,6 +101,19 @@
         error = '简介最多 100 字。';
         return;
       }
+      const currentName = String($session?.name ?? '').trim();
+      if (trimmedName && trimmedName !== currentName) {
+        try {
+          const available = await checkUsernameAvailability(trimmedName);
+          if (!available) {
+            error = '昵称已被占用。';
+            return;
+          }
+        } catch {
+          error = '昵称校验失败，请稍后再试。';
+          return;
+        }
+      }
       const form = new FormData();
       form.set('name', trimmedName);
       form.set('bio', trimmedBio);
@@ -105,7 +125,12 @@
       pb.authStore.save(pb.authStore.token, updated);
       saved = true;
     } catch (err) {
-      error = '保存失败';
+      const nameError = getFieldError(err, 'name');
+      if (nameError) {
+        error = '昵称已被占用。';
+      } else {
+        error = '保存失败';
+      }
     }
   };
 

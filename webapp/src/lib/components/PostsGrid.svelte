@@ -119,6 +119,7 @@
         gap: var(--grid-gap);
         align-items: start;
         padding: var(--grid-gap);
+        padding-top: 10px;
     }
 
     @media (max-width: 300px) {

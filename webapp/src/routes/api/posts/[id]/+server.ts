@@ -5,6 +5,7 @@ import { fileToDataUrl } from '$lib/server/files';
 import { mapPostDetail, mapPostSummary } from '$lib/server/mappers';
 import { getOptionalUserFromRequest, getUserFromRequest } from '$lib/server/auth';
 import { runModeration } from '$lib/server/moderation';
+import { verifyInvite } from '$lib/server/invite';
 import { createSystemMessage } from '$lib/server/systemMessages';
 import { applyRejectPenalty } from '$lib/server/moderationActions';
 import {
@@ -225,7 +226,22 @@ export const PATCH = async ({ params, request }) => {
     }
 
     const canPost = user.get?.('can_post') ?? user.can_post;
-    if (canPost === false) {
+    const rejectCount = Number(user.get?.('reject_count') ?? user.reject_count ?? 0);
+    if (canPost === false && rejectCount >= 3) {
+      return json({ error: 'can_post_disabled' }, { status: 403 });
+    }
+
+    const inviteRequired = (env.PUBLIC_INVITE_REQUIRED || '').toLowerCase() === 'true';
+    const shouldVerifyInvite = inviteRequired || canPost === false;
+    let inviteOk = false;
+    if (shouldVerifyInvite && canPost !== true) {
+      const invite = await verifyInvite(admin, user);
+      if (!invite.ok) {
+        return json({ error: invite.reason }, { status: 403 });
+      }
+      inviteOk = true;
+    }
+    if (canPost === false && !inviteOk) {
       return json({ error: 'can_post_disabled' }, { status: 403 });
     }
 

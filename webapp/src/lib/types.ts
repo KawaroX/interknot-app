@@ -24,6 +24,7 @@ export type PostSummary = {
   likedByViewer?: boolean;
   authorFollowedByViewer?: boolean;
   readByViewer?: boolean;
+  isHot?: boolean;
 };
 
 export type CommentItem = {

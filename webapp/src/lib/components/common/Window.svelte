@@ -33,6 +33,9 @@
             <div class="title">
                 <slot name="header">{title}</slot>
             </div>
+            <div class="header-actions">
+                <slot name="header-actions" />
+            </div>
             <button
                 class="close"
                 type="button"
@@ -107,8 +110,15 @@
         font-size: 20px;
     }
 
-    .close {
+    .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         margin-left: auto;
+    }
+
+    .close {
+        margin-left: 12px;
         cursor: pointer;
         background: transparent;
         border: none;

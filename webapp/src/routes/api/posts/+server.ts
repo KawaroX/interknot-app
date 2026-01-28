@@ -19,6 +19,10 @@ import {
 } from '$lib/validation';
 
 const baseUrl = env.PUBLIC_PB_URL || 'http://localhost:8090';
+const HOT_SCORE_THRESHOLD_MIN = 1.5;
+const HOT_SCORE_LIMIT = 10;
+const HOT_SCORE_SCAN = 50;
+const HOT_SCORE_OUTLIER_MULT = 3;
 
 export const GET = async ({ url, request }) => {
   const page = Number(url.searchParams.get('page') ?? '1');
@@ -33,11 +37,49 @@ export const GET = async ({ url, request }) => {
 
   const postFields = await getPostFields(admin);
   const sortField = postFields.has('edited_at') ? '-edited_at' : '-created';
+
   const records = await admin.collection('posts').getList(page, perPage, {
     filter: filterParts.join(' && '),
     sort: sortField,
     expand: 'author',
   });
+
+  let hotPostIds = new Set<string>();
+  if (postFields.has('hot_score')) {
+    try {
+      const hotRecords = await admin.collection('posts').getList(1, HOT_SCORE_SCAN, {
+        filter: 'moderation_status = "active"',
+        sort: '-hot_score',
+      });
+      const scores = hotRecords.items
+        .map((item) => Number(item.get?.('hot_score') ?? item.hot_score ?? 0))
+        .filter((score) => Number.isFinite(score))
+        .sort((a, b) => a - b);
+      const getMedian = (values: number[]) => {
+        if (values.length === 0) return 0;
+        const mid = Math.floor(values.length / 2);
+        return values.length % 2 === 0
+          ? (values[mid - 1] + values[mid]) / 2
+          : values[mid];
+      };
+      const median = getMedian(scores);
+      const deviations = scores.map((score) => Math.abs(score - median));
+      const mad = getMedian(deviations);
+      const outlierThreshold = median + HOT_SCORE_OUTLIER_MULT * mad;
+      const threshold = Math.max(HOT_SCORE_THRESHOLD_MIN, outlierThreshold);
+
+      const eligible = hotRecords.items
+        .filter((item) => {
+          const score = Number(item.get?.('hot_score') ?? item.hot_score ?? 0);
+          return score >= threshold;
+        })
+        .slice(0, HOT_SCORE_LIMIT)
+        .map((item) => item.id);
+      hotPostIds = new Set(eligible);
+    } catch (err) {
+      console.error('hot_post_lookup_failed', err);
+    }
+  }
 
   const user = await getOptionalUserFromRequest(request);
   let likedPostIds = new Set<string>();
@@ -103,6 +145,7 @@ export const GET = async ({ url, request }) => {
       (item.get?.('author') ?? item.author) as string,
     ),
     readByViewer: readPostIds.has(item.id),
+    isHot: hotPostIds.has(item.id),
   }));
 
   const getSortTime = (value?: string) => {
@@ -197,16 +240,24 @@ export const POST = async ({ request, getClientAddress }) => {
     return json({ error: 'cover_too_large' }, { status: 400 });
   }
 
+  const canPost = user.get?.('can_post') ?? user.can_post;
+  const rejectCount = Number(user.get?.('reject_count') ?? user.reject_count ?? 0);
+  if (canPost === false && rejectCount >= 3) {
+    return json({ error: 'can_post_disabled' }, { status: 403 });
+  }
+
   const inviteRequired = (env.PUBLIC_INVITE_REQUIRED || '').toLowerCase() === 'true';
-  if (inviteRequired) {
+  const shouldVerifyInvite = inviteRequired || canPost === false;
+  let inviteOk = false;
+  if (shouldVerifyInvite && canPost !== true) {
     const invite = await verifyInvite(admin, user);
     if (!invite.ok) {
       return json({ error: invite.reason }, { status: 403 });
     }
+    inviteOk = true;
   }
 
-  const canPost = user.get?.('can_post') ?? user.can_post;
-  if (canPost === false) {
+  if (canPost === false && !inviteOk) {
     return json({ error: 'can_post_disabled' }, { status: 403 });
   }
 
