@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import Window from '$lib/components/common/Window.svelte';
@@ -37,11 +38,19 @@
   let isEdit = false;
   let rateLimitError: { message: string; retryAfter: number } | null = null;
   let coverChangeId = 0;
+  let isDragActive = false;
+  let dragCounter = 0;
+  let isClipboardLoading = false;
+  let clipboardSupported = true;
 
   const coverLimitMb = Math.ceil(POST_COVER_MAX_BYTES / (1024 * 1024));
   const coverMaxDimension = 1600;
   const coverQualitySteps = [0.85, 0.75, 0.65];
 
+
+  onMount(() => {
+    clipboardSupported = !!navigator.clipboard?.read;
+  });
 
   $: isEdit = Boolean(post);
   $: titleUnits = getTitleUnits(title.trim());
@@ -104,26 +113,19 @@
     }
   };
 
-  const onFileChange = async (event: Event) => {
-    const target = event.target as HTMLInputElement;
-    const selectedFile = target.files?.[0] ?? null;
+  const resetDragState = () => {
+    dragCounter = 0;
+    isDragActive = false;
+  };
+
+  const applyCoverFile = async (selectedFile: File) => {
     const changeId = ++coverChangeId;
     const previousPreview = coverPreview;
     const previousFile = coverFile;
-    if (!selectedFile) {
-      if (coverPreview?.startsWith('blob:')) {
-        URL.revokeObjectURL(coverPreview);
-      }
-      coverPreview = null;
-      coverFile = null;
-      return;
-    }
-
     const compressed = await compressCoverFile(selectedFile);
     if (changeId !== coverChangeId) return;
     if (compressed.size > POST_COVER_MAX_BYTES) {
       alert(`封面图片过大，请控制在 ${coverLimitMb}MB 以内。`);
-      target.value = '';
       coverPreview = previousPreview;
       coverFile = previousFile;
       return;
@@ -135,8 +137,76 @@
     coverPreview = URL.createObjectURL(compressed);
   };
 
+  const onFileChange = async (event: Event) => {
+    const target = event.target as HTMLInputElement;
+    const selectedFile = target.files?.[0] ?? null;
+    if (!selectedFile) {
+      target.value = '';
+      return;
+    }
+    await applyCoverFile(selectedFile);
+    target.value = '';
+  };
+
   const onImageClick = () => {
     fileInput?.click();
+  };
+
+  const onDragEnter = (event: DragEvent) => {
+    event.preventDefault();
+    dragCounter += 1;
+    isDragActive = true;
+  };
+
+  const onDragLeave = (event: DragEvent) => {
+    event.preventDefault();
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (dragCounter === 0) {
+      isDragActive = false;
+    }
+  };
+
+  const onDragOver = (event: DragEvent) => {
+    event.preventDefault();
+  };
+
+  const onDrop = async (event: DragEvent) => {
+    event.preventDefault();
+    resetDragState();
+    const itemFile = event.dataTransfer?.items?.[0]?.getAsFile() ?? null;
+    const droppedFile = itemFile ?? event.dataTransfer?.files?.[0] ?? null;
+    if (!droppedFile) return;
+    if (!droppedFile.type.startsWith('image/')) {
+      alert('请拖拽图片文件。');
+      return;
+    }
+    await applyCoverFile(droppedFile);
+  };
+
+  const onClipboardClick = async () => {
+    if (isClipboardLoading) return;
+    if (!navigator.clipboard?.read) {
+      alert('当前浏览器不支持读取剪贴板图片。');
+      return;
+    }
+    isClipboardLoading = true;
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imageType = item.types.find((type) => type.startsWith('image/'));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+        const extension = imageType.split('/')[1] ?? 'png';
+        const file = new File([blob], `clipboard.${extension}`, { type: imageType });
+        await applyCoverFile(file);
+        return;
+      }
+      alert('剪贴板中没有图片。');
+    } catch {
+      alert('读取剪贴板失败，请检查浏览器权限。');
+    } finally {
+      isClipboardLoading = false;
+    }
   };
 
   const addTag = (event: KeyboardEvent) => {
@@ -270,10 +340,22 @@
     </svelte:fragment>
     <div class="compose">
       <div class="left-col">
-        <button class="image" type="button" on:click={onImageClick}>
+        <button
+          class="image"
+          type="button"
+          class:dragging={isDragActive}
+          on:click={onImageClick}
+          on:dragenter={onDragEnter}
+          on:dragleave={onDragLeave}
+          on:dragover={onDragOver}
+          on:drop={onDrop}
+          on:dragend={resetDragState}
+        >
           <img src={coverPreview ?? '/images/empty.webp'} alt="" />
-          {#if !coverPreview}
-            <div class="upload-hint">上传封面</div>
+          {#if !coverPreview || isDragActive}
+            <div class="upload-hint" class:drag={isDragActive}>
+              {isDragActive ? '松开上传' : '点击或拖拽上传'}
+            </div>
           {/if}
         </button>
         <input
@@ -283,6 +365,15 @@
           bind:this={fileInput}
           on:change={onFileChange}
         />
+        <button
+          class="clipboard-btn"
+          type="button"
+          on:click={onClipboardClick}
+          disabled={isClipboardLoading || !clipboardSupported}
+          title={clipboardSupported ? '从剪贴板读取图片' : '浏览器不支持剪贴板读取'}
+        >
+          <span>{isClipboardLoading ? '读取中...' : '粘贴封面'}</span>
+        </button>
       </div>
       
       <div class="message">
@@ -386,6 +477,7 @@
     flex-direction: column;
     width: 30%;
     max-width: 200px;
+    gap: 12px;
   }
 
   .image {
@@ -403,6 +495,12 @@
     padding: 0;
     cursor: pointer;
     appearance: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .image.dragging {
+    border-color: rgba(163, 193, 1, 0.8);
+    box-shadow: 0 0 0 4px rgba(163, 193, 1, 0.2);
   }
 
   .image img {
@@ -422,8 +520,39 @@
     text-align: center;
   }
 
+  .upload-hint.drag {
+    background: rgba(163, 193, 1, 0.9);
+    color: #000;
+  }
+
   .file-input {
     display: none;
+  }
+
+  .clipboard-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+    border: 2px dashed rgba(100, 100, 100, 0.6);
+    border-radius: 12px;
+    background: #0f0f0f;
+    color: #cfcfcf;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+  }
+
+  .clipboard-btn:hover {
+    border-color: rgba(163, 193, 1, 0.8);
+    color: #fff;
+  }
+
+  .clipboard-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .message {
@@ -659,11 +788,15 @@
     .left-col {
       width: 100%;
       max-width: none;
-      flex-direction: row;
-      justify-content: center;
+      flex-direction: column;
+      align-items: center;
     }
 
     .image {
+      width: 120px;
+    }
+
+    .clipboard-btn {
       width: 120px;
     }
 
