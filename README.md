@@ -1,5 +1,7 @@
 # 绳网风格论坛（Inter-Knot）
 
+**在线体验：https://interknot-alt.click/**
+
 这是一个以《绝区零》绳网为灵感的轻量论坛/讨论社区，基于 SvelteKit + PocketBase 构建，尝试还原“线索串联与话题聚合”的社区氛围。
 
 ## 截图

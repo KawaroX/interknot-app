@@ -31,6 +31,9 @@
   let registerPassword = '';
   let registerPasswordConfirm = '';
   let registerInviteCode = '';
+  let registerUsername = '';
+  let usernameError = '';
+  let usernameChecking = false;
   let legalScroll: HTMLDivElement | null = null;
 
   $: if ($session) {
@@ -202,6 +205,7 @@
 
   const registerWithEmail = async () => {
     error = '';
+    usernameError = '';
     if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
       error = '请先阅读并同意用户协议与隐私政策。';
       return;
@@ -211,8 +215,17 @@
       return;
     }
     const trimmedEmail = registerEmail.trim();
+    const trimmedUsername = registerUsername.trim();
     if (!trimmedEmail || !registerPassword || !registerPasswordConfirm) {
       error = '请输入注册邮箱与密码。';
+      return;
+    }
+    if (!trimmedUsername) {
+      error = '请输入用户名。';
+      return;
+    }
+    if (trimmedUsername.length < 2 || trimmedUsername.length > 20) {
+      error = '用户名需为 2-20 个字符。';
       return;
     }
     if (registerPassword !== registerPasswordConfirm) {
@@ -221,8 +234,20 @@
     }
     try {
       registerLoading = true;
-      const fallbackBase = trimmedEmail.split('@')[0] ?? '';
-      const fallbackName = (fallbackBase || buildFallbackName()).slice(0, 20);
+      // Check username availability (no auth needed for new user)
+      try {
+        const checkRes = await fetch(`/api/users/check-name-public?name=${encodeURIComponent(trimmedUsername)}`);
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          if (!checkData.available) {
+            error = '用户名已被占用，请换一个。';
+            registerLoading = false;
+            return;
+          }
+        }
+      } catch {
+        // If check fails, continue with registration and let PocketBase handle uniqueness
+      }
       const inviteCode = registerInviteCode.trim();
       const termsVersion = getVersion(termsDoc);
       const usageVersion = getVersion(usageDoc);
@@ -231,7 +256,7 @@
         email: trimmedEmail,
         password: registerPassword,
         passwordConfirm: registerPasswordConfirm,
-        name: fallbackName,
+        name: trimmedUsername,
         can_post: false,
         terms_version: termsVersion,
         terms_accepted_at: acceptedAt,
@@ -243,6 +268,19 @@
       }
       await pb.collection('users').create(payload);
       await pb.collection('users').authWithPassword(trimmedEmail, registerPassword);
+      // Verify invite code after registration to set can_post
+      if (inviteCode) {
+        try {
+          await fetch('/api/users/verify-invite', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${pb.authStore.token}`,
+            },
+          });
+        } catch {
+          // Invite verification failed silently, user can still use the site
+        }
+      }
       goto('/');
     } catch (err) {
       const message = formatPbError(err);
@@ -404,6 +442,17 @@
               />
             </label>
             <label>
+              用户名（2-20字）
+              <input
+                type="text"
+                bind:value={registerUsername}
+                autocomplete="nickname"
+                placeholder="请输入用户名"
+                minlength="2"
+                maxlength="20"
+              />
+            </label>
+            <label>
               设置密码
               <input
                 type="password"
@@ -438,6 +487,7 @@
                 loading ||
                 passwordLoading ||
                 !registerEmail.trim() ||
+                !registerUsername.trim() ||
                 !registerPassword ||
                 !registerPasswordConfirm
               }
