@@ -1,11 +1,16 @@
 import { writable } from 'svelte/store';
 import type { FollowedUser } from '$lib/types';
 import { listFollows } from '$lib/api/follows';
+import { pb } from '$lib/api/pb';
 
 export const following = writable<FollowedUser[]>([]);
 export const followingLoading = writable(false);
 
 export const loadFollowing = async () => {
+  if (!pb.authStore.isValid) {
+    following.set([]);
+    return;
+  }
   followingLoading.set(true);
   try {
     const items = await listFollows();

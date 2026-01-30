@@ -87,6 +87,8 @@
   const ensureDisplayName = async (meta?: unknown) => {
     const record = pb.authStore.model;
     if (!record) return;
+    const recordId = String(record.get?.('id') ?? record.id ?? '').trim();
+    if (!recordId) return;
     const currentName = String(record.get?.('name') ?? record.name ?? '').trim();
     const providerName = extractProviderName(meta);
     const email = String(record.get?.('email') ?? record.email ?? '').trim();
@@ -97,7 +99,7 @@
     const shouldUpdate = !currentName || currentName.startsWith(fallbackPrefix);
     if (!shouldUpdate || currentName === nextName) return;
     try {
-      const updated = await pb.collection('users').update(record.id, {
+      const updated = await pb.collection('users').update(recordId, {
         name: nextName,
       });
       pb.authStore.save(pb.authStore.token, updated);
