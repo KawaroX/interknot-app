@@ -206,7 +206,7 @@
     @media screen and (max-width: 700px) and (max-aspect-ratio: 1 / 1) {
         .window {
             width: 90%;
-            height: 95%;
+            height: 87%;
         }
 
         .window::before {
