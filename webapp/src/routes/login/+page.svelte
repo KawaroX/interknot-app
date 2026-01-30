@@ -7,6 +7,7 @@
   import type { LegalDocument } from '$lib/types';
 
   let error = '';
+  let notice = '';
   let legalError = '';
   let loading = false;
   let passwordLoading = false;
@@ -17,14 +18,11 @@
   let mobileTab: 'legal' | 'login' = 'legal';
   let isCompact = false;
   let showRegister = false;
-  let readStatus: Record<LegalDocument['key'], boolean> = {
-    terms_of_service: false,
-    usage_policy: false,
-  };
   let termsDoc: LegalDocument | undefined;
   let usageDoc: LegalDocument | undefined;
-  let canAgree = false;
   let agreed = false;
+  let showTermsConfirm = false;
+  let pendingLoginAction: 'github' | 'password' | null = null;
   let email = '';
   let password = '';
   let registerEmail = '';
@@ -81,6 +79,11 @@
     return baseMessage ? `${baseMessage} (${suffix})` : suffix;
   };
 
+  const clearMessages = () => {
+    error = '';
+    notice = '';
+  };
+
   const ensureDisplayName = async (meta?: unknown) => {
     const record = pb.authStore.model;
     if (!record) return;
@@ -103,34 +106,9 @@
     }
   };
 
-  const markRead = (key: LegalDocument['key']) => {
-    if (readStatus[key]) return;
-    readStatus = { ...readStatus, [key]: true };
-  };
-
-  const checkScroll = () => {
-    if (!legalScroll) return;
-    const { scrollTop, scrollHeight, clientHeight } = legalScroll;
-    if (scrollHeight <= clientHeight + 4) {
-      markRead(activeDoc);
-      return;
-    }
-    if (scrollTop + clientHeight >= scrollHeight - 4) {
-      markRead(activeDoc);
-    }
-  };
-
-  const handleScroll = () => {
-    checkScroll();
-  };
-
   const selectDoc = async (key: LegalDocument['key']) => {
     activeDoc = key;
     await tick();
-    if (legalScroll) {
-      legalScroll.scrollTop = 0;
-    }
-    checkScroll();
   };
 
   const getVersion = (doc: LegalDocument | undefined) => {
@@ -138,12 +116,24 @@
     return version.trim() || 'draft';
   };
 
-  const loginWithGithub = async () => {
-    error = '';
-    if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
-      error = '请先阅读并同意用户协议与隐私政策。';
-      return;
+  const confirmTermsAndProceed = () => {
+    agreed = true;
+    showTermsConfirm = false;
+    const action = pendingLoginAction;
+    pendingLoginAction = null;
+    if (action === 'github') {
+      void doLoginWithGithub();
+    } else if (action === 'password') {
+      void doLoginWithPassword();
     }
+  };
+
+  const cancelTermsConfirm = () => {
+    showTermsConfirm = false;
+    pendingLoginAction = null;
+  };
+
+  const doLoginWithGithub = async () => {
     if (legalError) {
       error = '条款加载失败，请稍后再试。';
       return;
@@ -167,6 +157,7 @@
         },
       });
       await ensureDisplayName(authData?.meta);
+      await verifyInviteAfterLogin();
       goto('/');
     } catch (err) {
       const message = formatPbError(err);
@@ -176,12 +167,17 @@
     }
   };
 
-  const loginWithPassword = async () => {
-    error = '';
-    if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
-      error = '请先阅读并同意用户协议与隐私政策。';
+  const loginWithGithub = async () => {
+    clearMessages();
+    if (!agreed) {
+      pendingLoginAction = 'github';
+      showTermsConfirm = true;
       return;
     }
+    await doLoginWithGithub();
+  };
+
+  const doLoginWithPassword = async () => {
     if (legalError) {
       error = '条款加载失败，请稍后再试。';
       return;
@@ -194,6 +190,7 @@
     try {
       passwordLoading = true;
       await pb.collection('users').authWithPassword(trimmedEmail, password);
+      await verifyInviteAfterLogin();
       goto('/');
     } catch (err) {
       const message = formatPbError(err);
@@ -203,11 +200,38 @@
     }
   };
 
+  const resendVerification = async () => {
+    clearMessages();
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      error = '请输入账号邮箱。';
+      return;
+    }
+    try {
+      await pb.collection('users').requestVerification(trimmedEmail);
+      notice = '验证邮件已发送，请检查邮箱。';
+    } catch (err) {
+      const message = formatPbError(err);
+      error = message ? `发送验证邮件失败：${message}` : '发送验证邮件失败';
+    }
+  };
+
+  const loginWithPassword = async () => {
+    clearMessages();
+    if (!agreed) {
+      pendingLoginAction = 'password';
+      showTermsConfirm = true;
+      return;
+    }
+    await doLoginWithPassword();
+  };
+
   const registerWithEmail = async () => {
-    error = '';
+    clearMessages();
     usernameError = '';
-    if (!agreed || !readStatus.terms_of_service || !readStatus.usage_policy) {
-      error = '请先阅读并同意用户协议与隐私政策。';
+    if (!agreed) {
+      pendingLoginAction = null;
+      showTermsConfirm = true;
       return;
     }
     if (legalError) {
@@ -267,26 +291,41 @@
         payload.invite_code = inviteCode;
       }
       await pb.collection('users').create(payload);
-      await pb.collection('users').authWithPassword(trimmedEmail, registerPassword);
-      // Verify invite code after registration to set can_post
-      if (inviteCode) {
-        try {
-          await fetch('/api/users/verify-invite', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${pb.authStore.token}`,
-            },
-          });
-        } catch {
-          // Invite verification failed silently, user can still use the site
-        }
+      try {
+        await pb.collection('users').requestVerification(trimmedEmail);
+        notice = '验证邮件已发送，请前往邮箱完成验证后再登录。';
+        showRegister = false;
+        email = trimmedEmail;
+        registerPassword = '';
+        registerPasswordConfirm = '';
+      } catch (sendErr) {
+        const message = formatPbError(sendErr);
+        error = message
+          ? `验证邮件发送失败：${message}。账号已创建，请稍后重试发送验证邮件。`
+          : '验证邮件发送失败。账号已创建，请稍后重试发送验证邮件。';
       }
-      goto('/');
     } catch (err) {
       const message = formatPbError(err);
       error = message ? `邮箱注册失败：${message}` : '邮箱注册失败';
     } finally {
       registerLoading = false;
+    }
+  };
+
+  const verifyInviteAfterLogin = async () => {
+    const record = pb.authStore.model;
+    if (!record) return;
+    const inviteCode = String(record.get?.('invite_code') ?? record.invite_code ?? '').trim();
+    if (!inviteCode) return;
+    try {
+      await fetch('/api/users/verify-invite', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${pb.authStore.token}`,
+        },
+      });
+    } catch {
+      // Invite verification failed silently, user can still use the site
     }
   };
 
@@ -299,15 +338,11 @@
       legalError = err instanceof Error ? err.message : '加载条款失败';
     } finally {
       legalLoading = false;
-      await tick();
-      checkScroll();
     }
   };
 
   $: termsDoc = legalDocuments.find((doc) => doc.key === 'terms_of_service');
   $: usageDoc = legalDocuments.find((doc) => doc.key === 'usage_policy');
-  $: canAgree =
-    readStatus.terms_of_service && readStatus.usage_policy && !legalLoading && !legalError;
 
   onMount(() => {
     void loadLegalDocuments();
@@ -353,14 +388,12 @@
         <div class="legal-head">
           <div>
             <div class="legal-title">用户协议与隐私政策</div>
-            <div class="legal-sub">请阅读条款内容并滚动到底后勾选同意。</div>
+            <div class="legal-sub">请阅读条款内容，勾选下方同意框即可注册或登录。</div>
           </div>
           {#if legalLoading}
             <span class="legal-tag">加载中</span>
           {:else if legalError}
             <span class="legal-tag error">加载失败</span>
-          {:else}
-            <span class="legal-tag">{canAgree ? '已读' : '未读'}</span>
           {/if}
         </div>
         <div class="legal-tabs">
@@ -372,9 +405,6 @@
             disabled={legalLoading || Boolean(legalError)}
           >
             <span>{termsDoc?.title ?? '用户协议'}</span>
-            {#if readStatus.terms_of_service}
-              <span class="read-tag">已读</span>
-            {/if}
           </button>
           <button
             class="legal-tab"
@@ -384,9 +414,6 @@
             disabled={legalLoading || Boolean(legalError)}
           >
             <span>{usageDoc?.title ?? '隐私政策'}</span>
-            {#if readStatus.usage_policy}
-              <span class="read-tag">已读</span>
-            {/if}
           </button>
         </div>
         {#if legalLoading}
@@ -394,7 +421,7 @@
         {:else if legalError}
           <div class="legal-body placeholder error">{legalError}</div>
         {:else}
-          <div class="legal-body" bind:this={legalScroll} on:scroll={handleScroll}>
+          <div class="legal-body" bind:this={legalScroll}>
             <div class="legal-text">
               {#if activeDoc === 'terms_of_service'}
                 {termsDoc?.body ?? ''}
@@ -417,7 +444,7 @@
             <input
               type="checkbox"
               bind:checked={agreed}
-              disabled={!canAgree || Boolean(legalError)}
+              disabled={legalLoading || Boolean(legalError)}
             />
             <span>
               我已阅读并同意《{termsDoc?.title ?? '用户协议'}》《{usageDoc?.title ?? '隐私政策'}》
@@ -528,9 +555,11 @@
             >
               {passwordLoading ? '登录中...' : '账号密码登录'}
             </button>
-            <div class="password-note">仅用于管理员账号登录</div>
             <button class="link-btn" type="button" on:click={() => (showRegister = true)}>
               没有账号？邮箱注册
+            </button>
+            <button class="link-btn" type="button" on:click={resendVerification}>
+              没收到验证邮件？重新发送
             </button>
           </div>
           <button
@@ -541,7 +570,9 @@
           >
             {loading ? '登录中...' : '使用 GitHub 登录'}
           </button>
-          <div class="note">普通用户仅支持 GitHub 登录</div>
+        {/if}
+        {#if notice}
+          <div class="notice">{notice}</div>
         {/if}
         {#if error}
           <div class="error">{error}</div>
@@ -551,6 +582,26 @@
     </div>
   </div>
 </div>
+
+{#if showTermsConfirm}
+  <div class="modal-overlay" on:click={cancelTermsConfirm}>
+    <div class="modal" on:click|stopPropagation>
+      <div class="modal-title">确认同意条款</div>
+      <div class="modal-body">
+        <p>您尚未勾选同意《用户协议》和《隐私政策》。</p>
+        <p>是否同意并继续{pendingLoginAction === 'github' ? 'GitHub登录' : pendingLoginAction === 'password' ? '登录' : '注册'}？</p>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn cancel" type="button" on:click={cancelTermsConfirm}>
+          取消
+        </button>
+        <button class="modal-btn confirm" type="button" on:click={confirmTermsAndProceed}>
+          同意并继续
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .login {
@@ -874,13 +925,81 @@
     cursor: not-allowed;
   }
 
-  .note {
-    text-align: center;
-    color: #6b6b6b;
-    font-size: 13px;
-  }
-
   .error {
     color: #ff7b7b;
+  }
+
+  .notice {
+    color: #c8d38a;
+  }
+
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+  }
+
+  .modal {
+    background: #0b0b0b;
+    border: 2px solid #1f1f1f;
+    border-radius: 16px;
+    padding: 24px;
+    max-width: 400px;
+    width: 100%;
+  }
+
+  .modal-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+
+  .modal-body {
+    color: #cfcfcf;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+
+  .modal-body p {
+    margin: 0 0 8px 0;
+  }
+
+  .modal-footer {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+
+  .modal-btn {
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+
+  .modal-btn:hover {
+    opacity: 0.9;
+  }
+
+  .modal-btn.cancel {
+    background: #2a2a2a;
+    color: #fff;
+  }
+
+  .modal-btn.confirm {
+    background: #a3c101;
+    color: #000;
   }
 </style>
