@@ -1209,6 +1209,43 @@
             0 0 0 1px rgba(194, 58, 43, 0.35);
     }
 
+    @media (max-width: 500px) {
+        .actions {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            flex-direction: row;
+            justify-content: flex-end;
+            opacity: 1;
+            transform: none;
+            pointer-events: auto;
+            margin-top: 0;
+            padding: 0;
+            gap: 6px;
+        }
+
+        .split-left:hover .actions {
+            opacity: 1;
+            transform: none;
+        }
+
+        .action {
+            padding: 4px 8px;
+            font-size: 13px;
+            border-radius: 8px;
+        }
+
+        .action-icon {
+            width: 16px;
+            height: 16px;
+        }
+
+        .action-icon svg {
+            width: 16px;
+            height: 16px;
+        }
+    }
+
     .comment {
         display: flex;
         padding-top: 10px;
@@ -1467,7 +1504,6 @@
             flex: 1;
             gap: 8px;
             min-height: 0;
-            overflow: hidden;
         }
 
         .image {
@@ -1478,9 +1514,8 @@
         }
 
         .message {
-            flex: 1 1 auto;
-            overflow-y: auto;
-            min-height: 0;
+            flex: 1 0 auto;
+            overflow: unset;
             padding: 12px;
         }
 
