@@ -1455,6 +1455,7 @@
         .split-layout {
             flex-direction: column;
             gap: 12px;
+            min-height: 0;
         }
 
         .split-left {
@@ -1465,22 +1466,27 @@
         .split-right {
             flex: 1;
             gap: 8px;
+            min-height: 0;
+            overflow: hidden;
         }
 
         .image {
             width: 100%;
             max-width: none;
             aspect-ratio: 3 / 4;
+            max-height: 40vh;
         }
 
         .message {
-            flex: 1 0 auto;
-            overflow: unset;
+            flex: 1 1 auto;
+            overflow-y: auto;
+            min-height: 0;
             padding: 12px;
         }
 
         .input-footer {
             padding: 0;
+            flex-shrink: 0;
         }
 
         .input {
