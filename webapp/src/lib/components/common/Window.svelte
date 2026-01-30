@@ -75,6 +75,7 @@
         justify-content: center;
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
     }
 
     .window {
@@ -207,6 +208,7 @@
         .window {
             width: 90%;
             height: 87%;
+            max-height: calc(100dvh - 40px);
         }
 
         .window::before {

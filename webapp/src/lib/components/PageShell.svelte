@@ -21,6 +21,7 @@
     width: calc(100vw - 20px);
     max-width: 1280px;
     height: 100vh;
+    height: 100dvh;
   }
 
   .body {
