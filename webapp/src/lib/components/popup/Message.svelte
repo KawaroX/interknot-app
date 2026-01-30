@@ -1043,7 +1043,7 @@
 
     .text {
         box-sizing: border-box;
-        /*margin-bottom: 12px;*/
+        margin-bottom: 12px;
         padding: 2px;
         color: #b2b0b3;
         white-space: pre-wrap;

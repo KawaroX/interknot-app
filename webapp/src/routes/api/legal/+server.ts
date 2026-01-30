@@ -17,19 +17,46 @@ const isAdmin = (user: RecordModel) => {
 const isLegalKey = (value: string): value is LegalKey => allowedKeys.has(value as LegalKey);
 
 const mapRecord = (record: RecordModel): LegalDocument => {
-  const key = (record.get?.('key') ?? record.key ?? '') as string;
+  // Try multiple ways to access fields
+  const r = record as unknown as Record<string, unknown>;
+  
+  // Try .get() method first
+  let key = '';
+  let title = '';
+  let body = '';
+  let version = '';
+  
+  if (typeof record.get === 'function') {
+    key = String(record.get('key') ?? '');
+    title = String(record.get('title') ?? '');
+    body = String(record.get('body') ?? '');
+    version = String(record.get('version') ?? '');
+  }
+  
+  // Fallback to direct property access
+  if (!key) key = String(r.key ?? '');
+  if (!title) title = String(r.title ?? '');
+  if (!body) body = String(r.body ?? '');
+  if (!version) version = String(r.version ?? '');
+  
   return {
     key: isLegalKey(key) ? key : 'terms_of_service',
-    title: (record.get?.('title') ?? record.title ?? '') as string,
-    body: (record.get?.('body') ?? record.body ?? '') as string,
-    version: (record.get?.('version') ?? record.version ?? '') as string,
-    updatedAt: (record.get?.('updated') ?? record.updated ?? undefined) as string | undefined,
+    title,
+    body,
+    version,
+    updatedAt: String(r.updated ?? ''),
   };
 };
 
 const mergeWithDefaults = (records: LegalDocument[]) => {
   const byKey = new Map(records.map((doc) => [doc.key, doc]));
-  return defaultLegalDocuments.map((doc) => byKey.get(doc.key) ?? doc);
+  return defaultLegalDocuments.map((doc) => {
+    const saved = byKey.get(doc.key);
+    if (saved && saved.body && saved.body.trim()) {
+      return saved;
+    }
+    return doc;
+  });
 };
 
 const normalizeText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
@@ -51,7 +78,28 @@ export const GET = async () => {
   try {
     const admin = await getAdminPb();
     const records = await admin.collection('legal_documents').getFullList({ sort: 'key' });
-    const documents = mergeWithDefaults(records.map(mapRecord));
+    
+    // Debug: log what we got
+    console.log('Records count:', records.length);
+    records.forEach((r, i) => {
+      const raw = r as unknown as Record<string, unknown>;
+      console.log(`Record ${i}:`, {
+        id: r.id,
+        key_via_get: typeof r.get === 'function' ? r.get('key') : 'no get method',
+        key_via_prop: raw.key,
+        title_via_get: typeof r.get === 'function' ? r.get('title') : 'no get method',
+        title_via_prop: raw.title,
+        body_length_via_get: typeof r.get === 'function' ? String(r.get('body') || '').length : 0,
+        body_length_via_prop: String(raw.body || '').length,
+      });
+    });
+    
+    const mapped = records.map(mapRecord);
+    console.log('Mapped:', mapped.map(m => ({ key: m.key, title: m.title, body_length: m.body.length })));
+    
+    const documents = mergeWithDefaults(mapped);
+    console.log('Final:', documents.map(d => ({ key: d.key, title: d.title, body_length: d.body.length })));
+    
     return json({ documents });
   } catch (err) {
     console.error('legal_docs_fetch_failed', err);
