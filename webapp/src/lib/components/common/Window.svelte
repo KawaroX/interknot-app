@@ -214,9 +214,11 @@
         }
 
         .content {
+            display: flex;
             flex-direction: column;
             overflow-x: hidden;
             overflow-y: auto;
+            min-height: 0;
         }
     }
 </style>
