@@ -54,3 +54,16 @@ img {
 .fade-leave-from {
   opacity: 1;
 }
+
+/* 移动端优化：防止 iOS 自动缩放 */
+@media screen and (max-width: 500px) {
+  /* 输入框字体强制 16px，防止点击时自动放大 */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
+/* 禁用双击缩放但保留滚动 */
+* {
+  touch-action: manipulation;
+}
