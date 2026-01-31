@@ -11,6 +11,7 @@ import { applyRejectPenalty } from '$lib/server/moderationActions';
 import {
   POST_BODY_MAX,
   POST_COVER_MAX_BYTES,
+  POST_GIF_MAX_BYTES,
   POST_TITLE_MAX_UNITS,
   getGraphemeCount,
   getTitleUnits,
@@ -284,8 +285,12 @@ export const PATCH = async ({ params, request }) => {
       return json({ error: 'body_too_long' }, { status: 400 });
     }
 
-    if (coverFile instanceof File && coverFile.size > POST_COVER_MAX_BYTES) {
-      return json({ error: 'cover_too_large' }, { status: 400 });
+    if (coverFile instanceof File) {
+      const isGif = coverFile.type === 'image/gif' || coverFile.name.toLowerCase().endsWith('.gif');
+      const maxSize = isGif ? POST_GIF_MAX_BYTES : POST_COVER_MAX_BYTES;
+      if (coverFile.size > maxSize) {
+        return json({ error: 'cover_too_large', detail: isGif ? 'gif' : 'image' }, { status: 400 });
+      }
     }
 
     const coverChanged = coverFile instanceof File && coverFile.size > 0;

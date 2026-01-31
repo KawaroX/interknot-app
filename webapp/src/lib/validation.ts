@@ -16,6 +16,7 @@ export const USER_BIO_MAX = 100;
 export const POST_TITLE_MAX_UNITS = 40;
 export const POST_BODY_MAX = 2000;
 export const POST_COVER_MAX_BYTES = 5 * 1024 * 1024;
+export const POST_GIF_MAX_BYTES = 8 * 1024 * 1024; // GIF 限制 8MB
 export const COMMENT_MAX = 2000;
 export const REPORT_DETAIL_MAX = 500;
 

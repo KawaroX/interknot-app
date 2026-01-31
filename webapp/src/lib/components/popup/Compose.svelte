@@ -18,6 +18,7 @@
     import {
         POST_BODY_MAX,
         POST_COVER_MAX_BYTES,
+        POST_GIF_MAX_BYTES,
         POST_TITLE_MAX_UNITS,
         getGraphemeCount,
         getTitleUnits,
@@ -47,6 +48,12 @@
     const coverMaxDimension = 1600;
     const coverQualitySteps = [0.85, 0.75, 0.65];
 
+    const generateSafeFilename = (extension: string): string => {
+        const timestamp = Date.now();
+        const random = Math.random().toString(36).substring(2, 8);
+        return `cover_${timestamp}_${random}.${extension}`;
+    };
+
     onMount(() => {
         clipboardSupported = !!navigator.clipboard?.read;
     });
@@ -73,9 +80,30 @@
             canvas.toBlob(resolve, type, quality),
         );
 
+    const isGifFile = (file: File): boolean =>
+        file.type === "image/gif" || file.name.toLowerCase().endsWith(".gif");
+
     const compressCoverFile = async (file: File) => {
         if (!file.type.startsWith("image/")) return file;
-        if (file.size <= POST_COVER_MAX_BYTES) return file;
+        
+        // GIF 文件不压缩（避免破坏动画）
+        if (isGifFile(file)) {
+            const maxSize = POST_GIF_MAX_BYTES;
+            if (file.size > maxSize) {
+                // 超过限制时保持原文件（后续会报错提示用户）
+                return file;
+            }
+            // 重命名为安全文件名
+            const outputName = generateSafeFilename("gif");
+            return new File([file], outputName, { type: "image/gif" });
+        }
+        
+        if (file.size <= POST_COVER_MAX_BYTES) {
+            // 静态图片也在上传前重命名
+            const extension = file.type === "image/png" ? "png" : "jpg";
+            const outputName = generateSafeFilename(extension);
+            return new File([file], outputName, { type: file.type || "image/jpeg" });
+        }
 
         try {
             const bitmap = await createImageBitmap(file);
@@ -103,9 +131,9 @@
             const outputType = shouldConvert
                 ? "image/jpeg"
                 : file.type || "image/jpeg";
-            const outputName = shouldConvert
-                ? file.name.replace(/\.[^/.]+$/, ".jpg")
-                : file.name;
+            // 使用统一的安全命名规则，避免暴露原始文件名
+            const extension = outputType === "image/png" ? "png" : "jpg";
+            const outputName = generateSafeFilename(extension);
             const qualitySteps =
                 outputType === "image/png" ? [1] : coverQualitySteps;
 
@@ -135,14 +163,26 @@
         isDragActive = false;
     };
 
+    const getMaxFileSize = (file: File): number => {
+        return isGifFile(file) ? POST_GIF_MAX_BYTES : POST_COVER_MAX_BYTES;
+    };
+
+    const getFileSizeLimitText = (file: File): string => {
+        const limit = isGifFile(file) ? Math.ceil(POST_GIF_MAX_BYTES / (1024 * 1024)) : coverLimitMb;
+        const type = isGifFile(file) ? "GIF" : "图片";
+        return `${type}过大，请控制在 ${limit}MB 以内。`;
+    };
+
     const applyCoverFile = async (selectedFile: File) => {
         const changeId = ++coverChangeId;
         const previousPreview = coverPreview;
         const previousFile = coverFile;
         const compressed = await compressCoverFile(selectedFile);
         if (changeId !== coverChangeId) return;
-        if (compressed.size > POST_COVER_MAX_BYTES) {
-            alert(`封面图片过大，请控制在 ${coverLimitMb}MB 以内。`);
+        
+        const maxSize = getMaxFileSize(selectedFile);
+        if (compressed.size > maxSize) {
+            alert(getFileSizeLimitText(selectedFile));
             coverPreview = previousPreview;
             coverFile = previousFile;
             return;
@@ -216,7 +256,8 @@
                 if (!imageType) continue;
                 const blob = await item.getType(imageType);
                 const extension = imageType.split("/")[1] ?? "png";
-                const file = new File([blob], `clipboard.${extension}`, {
+                const safeExtension = extension === "png" ? "png" : "jpg";
+                const file = new File([blob], generateSafeFilename(safeExtension), {
                     type: imageType,
                 });
                 await applyCoverFile(file);
@@ -292,9 +333,12 @@
             alert("正文最多 2000 字。");
             return;
         }
-        if (coverFile && coverFile.size > POST_COVER_MAX_BYTES) {
-            alert(`封面图片过大，请控制在 ${coverLimitMb}MB 以内。`);
-            return;
+        if (coverFile) {
+            const maxSize = getMaxFileSize(coverFile);
+            if (coverFile.size > maxSize) {
+                alert(getFileSizeLimitText(coverFile));
+                return;
+            }
         }
         submitting = true;
         try {
@@ -329,7 +373,17 @@
                     : err instanceof Error
                       ? err.message
                       : "";
-            alert(mapError(message));
+            // 处理 cover_too_large 错误，根据 detail 区分 GIF 和图片
+            if (err instanceof ApiError && message === "cover_too_large") {
+                const fileType = err.detail;
+                if (fileType === "gif") {
+                    alert("GIF 文件过大，请控制在 8MB 以内。");
+                } else {
+                    alert(`图片文件过大，请控制在 ${coverLimitMb}MB 以内。`);
+                }
+            } else {
+                alert(mapError(message));
+            }
         } finally {
             submitting = false;
         }
