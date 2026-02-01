@@ -14,7 +14,8 @@ const createSystemMessage = (app, userId, title, body) => {
     record.set("post", null);
     record.set("comment", null);
     record.set("status", "unread");
-    app.save(record);
+    // Save as admin to bypass collection permissions
+    $app.asAdmin().save(record);
   } catch (err) {
     console.error("[EmailVerify] system message create failed:", err);
   }

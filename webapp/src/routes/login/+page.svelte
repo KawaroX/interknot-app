@@ -12,6 +12,7 @@
   let loading = false;
   let passwordLoading = false;
   let registerLoading = false;
+  let registerInProgress = false; // 独立的请求锁
   let legalLoading = true;
   let legalDocuments: LegalDocument[] = [];
   let activeDoc: LegalDocument['key'] = 'terms_of_service';
@@ -228,52 +229,73 @@
     await doLoginWithPassword();
   };
 
+  // Track the last request timestamp to prevent double-clicks
+  let lastRegisterAttempt = 0;
+  const REGISTER_DEBOUNCE_MS = 2000;
+
   const registerWithEmail = async () => {
+    const now = Date.now();
+    if (now - lastRegisterAttempt < REGISTER_DEBOUNCE_MS) {
+      console.log('Registration attempted too soon after previous attempt');
+      return;
+    }
+    lastRegisterAttempt = now;
+
+    // 双重锁：阻止任何并发请求
+    if (registerInProgress || registerLoading) {
+      console.log('Registration already in progress, skipping');
+      return;
+    }
+    
+    registerInProgress = true;
+    registerLoading = true;
+    
     clearMessages();
     usernameError = '';
-    if (!agreed) {
-      pendingLoginAction = null;
-      showTermsConfirm = true;
-      return;
-    }
-    if (legalError) {
-      error = '条款加载失败，请稍后再试。';
-      return;
-    }
-    const trimmedEmail = registerEmail.trim();
-    const trimmedUsername = registerUsername.trim();
-    if (!trimmedEmail || !registerPassword || !registerPasswordConfirm) {
-      error = '请输入注册邮箱与密码。';
-      return;
-    }
-    if (!trimmedUsername) {
-      error = '请输入用户名。';
-      return;
-    }
-    if (trimmedUsername.length < 2 || trimmedUsername.length > 20) {
-      error = '用户名需为 2-20 个字符。';
-      return;
-    }
-    if (registerPassword !== registerPasswordConfirm) {
-      error = '两次输入的密码不一致。';
-      return;
-    }
+    
     try {
-      registerLoading = true;
-      // Check username availability (no auth needed for new user)
+      if (!agreed) {
+        pendingLoginAction = null;
+        showTermsConfirm = true;
+        return;
+      }
+      if (legalError) {
+        error = '条款加载失败，请稍后再试。';
+        return;
+      }
+      const trimmedEmail = registerEmail.trim();
+      const trimmedUsername = registerUsername.trim();
+      if (!trimmedEmail || !registerPassword || !registerPasswordConfirm) {
+        error = '请输入注册邮箱与密码。';
+        return;
+      }
+      if (!trimmedUsername) {
+        error = '请输入用户名。';
+        return;
+      }
+      if (trimmedUsername.length < 2 || trimmedUsername.length > 20) {
+        error = '用户名需为 2-20 个字符。';
+        return;
+      }
+      if (registerPassword !== registerPasswordConfirm) {
+        error = '两次输入的密码不一致。';
+        return;
+      }
+      
+      // Check username availability
       try {
         const checkRes = await fetch(`/api/users/check-name-public?name=${encodeURIComponent(trimmedUsername)}`);
         if (checkRes.ok) {
           const checkData = await checkRes.json();
           if (!checkData.available) {
             error = '用户名已被占用，请换一个。';
-            registerLoading = false;
             return;
           }
         }
       } catch {
-        // If check fails, continue with registration and let PocketBase handle uniqueness
+        // If check fails, continue with registration
       }
+      
       const inviteCode = registerInviteCode.trim();
       const termsVersion = getVersion(termsDoc);
       const usageVersion = getVersion(usageDoc);
@@ -283,6 +305,7 @@
         password: registerPassword,
         passwordConfirm: registerPasswordConfirm,
         name: trimmedUsername,
+        role: 'user',
         can_post: false,
         terms_version: termsVersion,
         terms_accepted_at: acceptedAt,
@@ -292,25 +315,39 @@
       if (inviteCode) {
         payload.invite_code = inviteCode;
       }
-      await pb.collection('users').create(payload);
-      try {
-        await pb.collection('users').requestVerification(trimmedEmail);
-        notice = '验证邮件已发送，请前往邮箱完成验证后再登录。';
-        showRegister = false;
-        email = trimmedEmail;
-        registerPassword = '';
-        registerPasswordConfirm = '';
-      } catch (sendErr) {
-        const message = formatPbError(sendErr);
-        error = message
-          ? `验证邮件发送失败：${message}。账号已创建，请稍后重试发送验证邮件。`
-          : '验证邮件发送失败。账号已创建，请稍后重试发送验证邮件。';
+      
+      console.log('Sending registration request with email:', trimmedEmail);
+      
+      // Use backend API to register (bypasses frontend permission issues)
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || 'Registration failed');
       }
-    } catch (err) {
+      
+      const result = await res.json();
+      console.log('Registration successful:', result.id);
+      
+      notice = '验证邮件已发送，请前往邮箱完成验证后再登录。';
+      showRegister = false;
+      email = trimmedEmail;
+      registerPassword = '';
+      registerPasswordConfirm = '';
+    } catch (err: any) {
+      console.error('Registration error:', err);
+      console.error('Error response:', err.response);
+      console.error('Error data:', err.data);
       const message = formatPbError(err);
       error = message ? `邮箱注册失败：${message}` : '邮箱注册失败';
     } finally {
       registerLoading = false;
+      registerInProgress = false;
+      console.log('Registration flow completed');
     }
   };
 
