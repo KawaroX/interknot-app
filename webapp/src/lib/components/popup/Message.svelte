@@ -7,7 +7,7 @@
     import Avatar from "$lib/components/common/Avatar.svelte";
     import Level from "$lib/components/common/Level.svelte";
     import { pb } from "$lib/api/pb";
-    import { buildFileUrl } from "$lib/api/files";
+    import { buildFileUrl, buildThumbUrl } from "$lib/api/files";
     import { closePopup, openCompose, openImage } from "$lib/stores/popup";
     import { setFollow } from "$lib/api/follows";
     import { addFollowing, removeFollowing } from "$lib/stores/follows";
@@ -110,6 +110,8 @@
     $: reportDetailOverLimit =
         getGraphemeCount(reportDetail.trim()) > REPORT_DETAIL_MAX;
     $: bodyText = post?.body ?? "";
+    $: coverPreviewUrl =
+        buildThumbUrl(post?.coverUrl ?? null, "1200x0") ?? post?.coverUrl ?? null;
     $: bodyLineCount = bodyText.split("\n").length;
     $: bodyLong =
         bodyText.trim().length > BODY_PREVIEW_LIMIT ||
@@ -587,7 +589,7 @@
                         on:contextmenu={openImageMenu}
                     >
                         {#if post.coverUrl}
-                            <img src={post.coverUrl} alt="" />
+                            <img src={coverPreviewUrl ?? post.coverUrl} alt="" />
                         {:else}
                             <img src="/images/empty.webp" alt="" />
                         {/if}

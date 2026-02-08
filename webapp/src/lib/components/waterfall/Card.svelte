@@ -3,6 +3,7 @@
     import { goto } from "$app/navigation";
     import type { PostSummary } from "$lib/types";
     import { defaultAvatar } from "$lib/data/characters";
+    import { buildThumbUrl } from "$lib/api/files";
     import { pb } from "$lib/api/pb";
     import { setFollow } from "$lib/api/follows";
     import { toggleLike } from "$lib/api/posts";
@@ -40,6 +41,8 @@
     };
 
     $: bodyText = post.body ?? "";
+    $: coverThumbUrl =
+        buildThumbUrl(post.coverUrl, "720x0") ?? post.coverUrl ?? "/images/empty.webp";
     $: titleHtml = highlight(post.title, $searchQuery);
     $: previewHtml = highlight(bodyText.split("\n")[0], $searchQuery);
 
@@ -162,13 +165,13 @@
         <!-- 始终存在的占位图片，保持布局稳定 -->
         <img
             class="image-placeholder"
-            src={post.coverUrl ?? "/images/empty.webp"}
+            src={coverThumbUrl}
             alt=""
         />
         <!-- 动画图片层 -->
         {#if !isSelected}
             <div class="image-inner" out:send={{ key: post.id }}>
-                <img src={post.coverUrl ?? "/images/empty.webp"} alt="" />
+                <img src={coverThumbUrl} alt="" />
             </div>
         {/if}
         <div class="view">

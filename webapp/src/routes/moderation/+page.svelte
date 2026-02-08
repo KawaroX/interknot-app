@@ -6,6 +6,7 @@
   import Avatar from '$lib/components/common/Avatar.svelte';
   import { session } from '$lib/stores/session';
   import { fetchModerationQueue, submitModerationDecision } from '$lib/api/moderation';
+  import { buildThumbUrl } from '$lib/api/files';
   import { pb } from '$lib/api/pb';
   import { defaultAvatar } from '$lib/data/characters';
   import type { ModerationQueueItem } from '$lib/types';
@@ -288,7 +289,7 @@
             </div>
             {#if item.coverUrl}
               <button class="cover" type="button" on:click={() => (previewUrl = item.coverUrl ?? null)}>
-                <img src={item.coverUrl} alt="" />
+                <img src={buildThumbUrl(item.coverUrl, '720x0') ?? item.coverUrl} alt="" />
               </button>
             {/if}
           </article>
